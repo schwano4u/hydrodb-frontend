@@ -1,0 +1,5 @@
+services:
+  ingress:
+    volumes:
+      - ${HYDRODB_FRONTEND_CONFIG_DIR:?set frontend config directory}/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${HYDRODB_FRONTEND_WEB_DIR:?set frontend web directory}:/srv/hydrodb-frontend:ro

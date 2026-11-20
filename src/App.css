@@ -1,0 +1,31 @@
+.application { max-width: 1040px; margin: auto; padding: 0 24px; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 28px 0; border-bottom: 1px solid #dbe4ec; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.04em; }
+.brand-mark { width: 36px; height: 36px; fill: none; stroke: #147fa8; stroke-width: 3; stroke-linecap: round; }
+.read-only { padding: 6px 12px; border: 1px solid #cbd9e5; border-radius: 24px; font-size: 0.85rem; font-weight: 600; }
+main { max-width: 680px; padding: 60px 0; }
+.milestone { color: #147fa8; font-size: 0.85rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+h2 { margin: 12px 0; font-size: clamp(1.7rem, 4vw, 2.5rem); letter-spacing: -0.045em; line-height: 1.2; }
+.introduction, .scope-note { color: #526578; line-height: 1.65; }
+.connection-card { margin-top: 32px; padding: 28px; background: white; border: 1px solid #dbe4ec; border-radius: 16px; }
+h3 { margin: 0 0 24px; font-size: 1.1rem; }
+h4 { margin: 28px 0 8px; font-size: 1rem; }
+dl { display: grid; grid-template-columns: 140px 1fr; gap: 14px; font-size: 0.9rem; }
+dt { color: #526578; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.connection-result { margin-top: 24px; padding: 14px 16px; border-radius: 8px; background: #eff4f8; font-weight: 600; overflow-wrap: anywhere; }
+.connection-result.live { color: #1a6545; background: #edf7f1; }
+.connection-result.failed { color: #962f2f; background: #fcf0f0; }
+.scope-note { font-size: 0.85rem; }
+button { margin-top: 8px; padding: 10px 16px; border: 1px solid #bccfdd; border-radius: 8px; color: #172b40; background: white; }
+form { display: grid; gap: 12px; }
+input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #bccfdd; border-radius: 8px; font: inherit; }
+.session-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+footer { padding: 24px 0; border-top: 1px solid #dbe4ec; color: #526578; font-size: 0.8rem; line-height: 1.6; }
+@media (max-width: 480px) {
+  main { padding: 32px 0; }
+  .connection-card { padding: 20px; }
+  dl { grid-template-columns: 1fr; gap: 8px; }
+  dd { margin-bottom: 12px; }
+}
