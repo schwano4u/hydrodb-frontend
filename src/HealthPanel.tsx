@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { ApiError, checkLiveness, checkReadiness, getDatabaseStatus } from './api'
 import type { DatabaseStatus, Readiness } from './api'
 
@@ -21,12 +22,13 @@ function result<T>(settled: PromiseSettledResult<T>): Check<T> {
 }
 
 export default function HealthPanel({
-  authenticated, expired, refreshKey, onSessionExpired,
+  authenticated, expired, refreshKey, onSessionExpired, sessionAction,
 }: {
   authenticated: boolean
   expired: boolean
   refreshKey: number
   onSessionExpired: () => void
+  sessionAction?: ReactNode
 }) {
   const [attempt, setAttempt] = useState(0)
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -103,9 +105,12 @@ export default function HealthPanel({
           <dt>Schema version</dt><dd>{current.database.value.schema_version}</dd>
         </dl>
       )}
-      <button type="button" disabled={!current} onClick={() => setAttempt((value) => value + 1)}>
-        Check health again
-      </button>
+      <div className="session-actions">
+        <button type="button" disabled={!current} onClick={() => setAttempt((value) => value + 1)}>
+          Check health again
+        </button>
+        {sessionAction}
+      </div>
     </section>
   )
 }

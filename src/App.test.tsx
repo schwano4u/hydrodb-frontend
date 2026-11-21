@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -19,7 +19,9 @@ describe('browser foundation', () => {
       redirect: 'error',
     }))
     expect(screen.getByText(/Session identity is shown separately/)).toBeInTheDocument()
-    expect(await screen.findByLabelText(/password/i)).toBeInTheDocument()
+    const header = screen.getByRole('banner')
+    fireEvent.click(within(header).getByRole('button', { name: 'User identity' }))
+    expect(await within(header).findByLabelText(/password/i)).toBeInTheDocument()
     expect(screen.getByText('Backend/database ready')).toBeInTheDocument()
     expect(request.mock.calls.some(([path]) => path === '/api/v1/status')).toBe(false)
   })

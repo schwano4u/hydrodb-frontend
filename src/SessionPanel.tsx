@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { ApiError, getCurrentSession, signIn, signOut } from './api'
 import HealthPanel from './HealthPanel'
+import WorkspaceSlot from './WorkspaceSlot'
+import { WorkspaceMenus } from './ApplicationMenu'
 
-type Identity = { displayName: string; username: string; csrfToken: string }
+type Identity = { principalId: string; displayName: string; username: string; csrfToken: string }
 type Session =
   | { state: 'restoring' }
   | { state: 'unavailable'; message: string }
@@ -17,12 +20,16 @@ function failure(error: unknown): string {
   return error.message + retry
 }
 
-export default function SessionPanel() {
+export default function SessionPanel({ identityHost, menuHost }: { identityHost?: HTMLElement | null; menuHost?: HTMLElement | null }) {
   const [session, setSession] = useState<Session>({ state: 'restoring' })
   const [busy, setBusy] = useState(false)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const operation = useRef<AbortController | null>(null)
+  const [identityOpen, setIdentityOpen] = useState(false)
+  const identityContainer = useRef<HTMLDivElement>(null)
+  const identityButton = useRef<HTMLButtonElement>(null)
+  const identityDialog = useRef<HTMLElement>(null)
   const [healthRefresh, setHealthRefresh] = useState(0)
   const onSessionChange = () => setHealthRefresh((value) => value + 1)
   const onSessionExpired = useCallback(() => {
@@ -30,8 +37,33 @@ export default function SessionPanel() {
     operation.current = null
     setBusy(false)
     setPassword('')
+    setIdentityOpen(true)
     setSession({ state: 'signed-out', expired: true, message: 'Your session has expired. Sign in again.' })
   }, [])
+
+  useEffect(() => {
+    if (!identityOpen) return
+    identityDialog.current?.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)')?.focus()
+    function dismiss(event: PointerEvent) {
+      if (event.target instanceof Node && !identityContainer.current?.contains(event.target)) {
+        setIdentityOpen(false)
+        setPassword('')
+      }
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setIdentityOpen(false)
+      setPassword('')
+      identityButton.current?.focus()
+    }
+    document.addEventListener('pointerdown', dismiss)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [identityOpen, session.state])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -42,6 +74,7 @@ export default function SessionPanel() {
         setSession({
           state: 'signed-in',
           identity: {
+            principalId: current.principal_id,
             displayName: current.display_name,
             username: current.username,
             csrfToken: current.credential.csrf_token,
@@ -51,6 +84,7 @@ export default function SessionPanel() {
       },
       (error: unknown) => {
         if (controller.signal.aborted) return
+        if (!(error instanceof ApiError && error.status === 401)) setIdentityOpen(true)
         setSession(error instanceof ApiError && error.status === 401
           ? { state: 'signed-out' }
           : { state: 'unavailable', message: failure(error) })
@@ -78,14 +112,18 @@ export default function SessionPanel() {
       setSession({
         state: 'signed-in',
         identity: {
+          principalId: result.principal.principal_id,
           displayName: result.principal.display_name,
           username,
           csrfToken: result.csrf_token,
         },
       })
       onSessionChange()
+      setIdentityOpen(false)
+      identityButton.current?.focus()
     } catch (error) {
       if (!controller.signal.aborted) {
+        setIdentityOpen(true)
         setSession(error instanceof ApiError && error.kind === 'http'
           ? { state: 'signed-out', message: failure(error) }
           : {
@@ -114,6 +152,7 @@ export default function SessionPanel() {
       setSession({
         state: 'signed-in',
         identity: {
+          principalId: current.principal_id,
           displayName: current.display_name,
           username: current.username,
           csrfToken: current.credential.csrf_token,
@@ -122,6 +161,7 @@ export default function SessionPanel() {
       onSessionChange()
     } catch (error) {
       if (controller.signal.aborted) return
+      setIdentityOpen(true)
       if (error instanceof ApiError && error.status === 401) {
         setSession({
           state: 'signed-out',
@@ -151,6 +191,7 @@ export default function SessionPanel() {
       onSessionChange()
     } catch (error) {
       if (controller.signal.aborted) return
+      setIdentityOpen(true)
       if (error instanceof ApiError && error.status === 401) {
         setSession({ state: 'signed-out', expired: true, message: 'Your session has expired. Sign in again.' })
         onSessionChange()
@@ -166,9 +207,32 @@ export default function SessionPanel() {
     }
   }
 
-  return (
-    <>
-    <section className="connection-card" aria-labelledby="session-title" aria-busy={busy}>
+  const health = <HealthPanel
+    authenticated={session.state === 'signed-in' && !busy}
+    expired={session.state === 'signed-out' && session.expired === true}
+    refreshKey={healthRefresh}
+    onSessionExpired={onSessionExpired}
+    sessionAction={session.state === 'signed-in' &&
+      <button type="button" disabled={busy} onClick={() => void checkSession()}>Check session</button>}
+  />
+
+  const caption = session.state === 'signed-in' ? session.identity.username
+    : session.state === 'restoring' ? 'Checking session...' : session.state === 'unavailable' ? 'Session unavailable' : 'Sign in'
+  const initials = session.state === 'signed-in'
+    ? (session.identity.displayName.trim() || session.identity.username).split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase()
+    : ''
+  const identity = <div className="user-identity" ref={identityContainer}>
+    <button type="button" className="identity-toggle" ref={identityButton} aria-label="User identity"
+      aria-describedby="identity-state" aria-haspopup="dialog" aria-expanded={identityOpen} aria-controls="identity-dialog"
+      onClick={() => { setIdentityOpen(!identityOpen); setPassword('') }}>
+      <span className="identity-avatar" aria-hidden="true">{initials || <svg viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="4" /><path d="M4 22v-2a8 8 0 0 1 16 0v2" />
+      </svg>}</span>
+      <span className="identity-label" id="identity-state">{caption}</span>
+    </button>
+    {identityOpen && <section className="connection-card identity-dialog" id="identity-dialog" role="dialog"
+      aria-label="User identity" ref={identityDialog} aria-busy={busy}>
+    <section aria-labelledby="session-title">
       <h3 id="session-title">Database login</h3>
       <p className="scope-note">
         Sign in to a HydroDB user account, not PostgreSQL. Dataset access remains
@@ -203,19 +267,22 @@ export default function SessionPanel() {
           </dl>
           {session.message && <p role="alert">{session.message}</p>}
           <div className="session-actions">
-            <button type="button" disabled={busy} onClick={() => void checkSession()}>Check session</button>
             <button type="button" disabled={busy} onClick={() => void logout()}>Sign out</button>
           </div>
           {busy && <p role="status">Updating session...</p>}
         </>
       )}
     </section>
-    <HealthPanel
-      authenticated={session.state === 'signed-in' && !busy}
-      expired={session.state === 'signed-out' && session.expired === true}
-      refreshKey={healthRefresh}
-      onSessionExpired={onSessionExpired}
-    />
+    </section>}
+  </div>
+
+  return (
+    <>
+    {identityHost ? createPortal(identity, identityHost) : identity}
+    {session.state !== 'signed-in' && menuHost && createPortal(<WorkspaceMenus />, menuHost)}
+    {session.state === 'signed-in'
+      ? <WorkspaceSlot key={`${session.identity.principalId}:${healthRefresh}`} principalId={session.identity.principalId} onSessionExpired={onSessionExpired} health={health} menuHost={menuHost} />
+      : health}
     </>
   )
 }

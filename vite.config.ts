@@ -3,6 +3,11 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rolldownOptions: {
+      output: { codeSplitting: { groups: [{ name: 'openlayers', test: /[\\/]node_modules[\\/]ol[\\/]/ }] } },
+    },
+  },
   test: {
     include: ['src/**/*.test.{ts,tsx}'],
     environment: 'jsdom',

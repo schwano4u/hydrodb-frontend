@@ -1,8 +1,13 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, checkLiveness, checkReadiness, getCurrentSession, getDatabaseStatus, signIn, signOut } from './api'
 import type { CurrentSession, SignInResult } from './api'
 import SessionPanel from './SessionPanel'
+
+vi.mock('./Workspace', () => ({
+  default: ({ health }: { health: ReactNode }) => <section aria-label="Read-only workspace">Workspace placeholder{health}</section>,
+}))
 
 vi.mock('./api', async (importOriginal) => ({
   ...await importOriginal<typeof import('./api')>(),
@@ -39,6 +44,7 @@ beforeEach(() => {
 })
 
 async function fillLogin() {
+  fireEvent.click(screen.getByRole('button', { name: 'User identity' }))
   fireEvent.change(await screen.findByLabelText('Username'), { target: { value: 'reader' } })
   fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'test-password' } })
 }
@@ -47,22 +53,30 @@ describe('browser sessions', () => {
   it('restores an existing cookie session without showing a password or CSRF token', async () => {
     vi.mocked(getCurrentSession).mockResolvedValue(current)
     render(<SessionPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'User identity' }))
     expect(await screen.findByText('Test Reader')).toBeInTheDocument()
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
     expect(screen.queryByText(token)).not.toBeInTheDocument()
+    const workspace = await screen.findByRole('region', { name: 'Read-only workspace' })
+    expect(within(workspace).getByRole('region', { name: 'Backend and database health' })).toBeInTheDocument()
+    expect(screen.getAllByRole('region', { name: 'Backend and database health' })).toHaveLength(1)
   })
 
   it('submits once and confirms sign-out using the returned CSRF token', async () => {
     render(<SessionPanel />)
     await fillLogin()
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
-    expect(await screen.findByText('Test Reader')).toBeInTheDocument()
+    await screen.findByRole('region', { name: 'Read-only workspace' })
+    expect(screen.queryByRole('dialog', { name: 'User identity' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'User identity' }))
+    expect(screen.getByText('Test Reader')).toBeInTheDocument()
     expect(signIn).toHaveBeenCalledExactlyOnceWith('reader', 'test-password', expect.any(AbortSignal))
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     expect(await screen.findByText('Signed out. Server session revoked.')).toBeInTheDocument()
     expect(signOut).toHaveBeenCalledExactlyOnceWith(token, expect.any(AbortSignal))
     expect(screen.getByLabelText('Password')).toHaveValue('')
     expect(screen.queryByText('Authenticated database read succeeded')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Read-only workspace' })).not.toBeInTheDocument()
   })
 
   it.each([
@@ -100,17 +114,41 @@ describe('browser sessions', () => {
   it('clears identity and token on a confirmed expired session', async () => {
     vi.mocked(getCurrentSession).mockResolvedValueOnce(current)
     render(<SessionPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'User identity' }))
     await screen.findByText('Test Reader')
-    fireEvent.click(screen.getByRole('button', { name: 'Check session' }))
+    expect(within(screen.getByRole('dialog', { name: 'User identity' })).queryByRole('button', { name: 'Check session' })).not.toBeInTheDocument()
+    const health = await screen.findByRole('region', { name: 'Backend and database health' })
+    fireEvent.click(within(health).getByRole('button', { name: 'Check session' }))
     expect(await screen.findByText('Your session has expired. Sign in again.')).toBeInTheDocument()
     expect(screen.queryByText('Test Reader')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Read-only workspace' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check session' })).not.toBeInTheDocument()
+  })
+
+  it('revalidates from Health without opening the avatar and disables duplicate checks', async () => {
+    vi.mocked(getCurrentSession).mockResolvedValueOnce(current)
+    render(<SessionPanel />)
+    await screen.findByText('Authenticated database read succeeded')
+    let finish: ((value: CurrentSession) => void) | undefined
+    vi.mocked(getCurrentSession).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const health = screen.getByRole('region', { name: 'Backend and database health' })
+    const button = within(health).getByRole('button', { name: 'Check session' })
+    fireEvent.click(button)
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(getCurrentSession).toHaveBeenCalledTimes(2)
+    await act(async () => finish?.(current))
+    expect(await screen.findByText('Authenticated database read succeeded')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check session' })).toBeEnabled()
+    expect(screen.queryByRole('dialog', { name: 'User identity' })).not.toBeInTheDocument()
   })
 
   it('does not claim revocation after failed logout and allows retry', async () => {
     vi.mocked(getCurrentSession).mockResolvedValue(current)
     vi.mocked(signOut).mockRejectedValueOnce(new ApiError('network', 'Unable to reach the API.'))
     render(<SessionPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'User identity' }))
     await screen.findByText('Test Reader')
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('server-session revocation is not confirmed')
@@ -145,5 +183,18 @@ describe('browser sessions', () => {
     expect(await screen.findByText('Your session has expired. Sign in again.')).toBeInTheDocument()
     expect(screen.getByText('Session expired (HTTP 401). Sign in again.')).toBeInTheDocument()
     expect(screen.queryByText('Test Reader')).not.toBeInTheDocument()
+  })
+
+  it('dismisses the identity popup with Escape or outside interaction and clears an unsubmitted password', async () => {
+    render(<SessionPanel />)
+    expect(screen.queryByRole('dialog', { name: 'User identity' })).not.toBeInTheDocument()
+    await fillLogin()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'User identity' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'User identity' })).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'User identity' }))
+    expect(screen.getByLabelText('Password')).toHaveValue('')
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('dialog', { name: 'User identity' })).not.toBeInTheDocument()
   })
 })

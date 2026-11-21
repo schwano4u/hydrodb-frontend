@@ -9,9 +9,14 @@
     "lint": "oxlint --deny-warnings",
     "test": "vitest run",
     "test:browser": "NODE_EXTRA_CA_CERTS=../staging/test/hydrodb-empty-test/tls/ca.crt playwright test",
+    "test:browser:isolated": "NODE_EXTRA_CA_CERTS=../staging/test/hydrodb-empty-test/tls/ca.crt node browser/isolated.mjs",
     "deploy:test": "npm run build && bash deploy/test.sh"
   },
   "dependencies": {
+    "dockview": "8.9.1",
+    "hyparquet-writer": "^0.18.0",
+    "lossless-json": "4.3.4",
+    "ol": "10.11.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

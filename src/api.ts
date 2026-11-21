@@ -1,3 +1,5 @@
+import { parse } from 'lossless-json'
+
 export type ApiFailure = 'http' | 'timeout' | 'network' | 'cancelled' | 'malformed' | 'invalid-input'
 
 export class ApiError extends Error {
@@ -60,6 +62,7 @@ export interface DatabaseStatus {
   schema_version: number
 }
 
+export type MetadataPath = `/api/v1/metadata/${string}`
 type Endpoint =
   | '/api/v1/auth/sessions'
   | '/api/v1/auth/me'
@@ -67,6 +70,7 @@ type Endpoint =
   | '/health/live'
   | '/health/ready'
   | '/api/v1/status'
+  | MetadataPath
 
 const messages: Record<string, string> = {
   AUTHENTICATION_FAILED: 'Invalid username or password.',
@@ -78,6 +82,15 @@ const messages: Record<string, string> = {
   HISTORY_FENCED: 'Database history is fenced; operator action is required.',
   INTERNAL_ERROR: 'The backend reported an internal error.',
   INVALID_REQUEST: 'The backend rejected the request.',
+  NOT_FOUND: 'This instance or retained version is missing or not accessible.',
+  HISTORY_UNAVAILABLE: 'This read cutoff is no longer available. Explicitly refresh to start a new view.',
+  HISTORY_PURGED: 'This view includes purged history. Explicitly refresh to start a new view.',
+  CATALOG_LIMIT_EXCEEDED: 'Catalog read exceeded nine seconds. Narrow the selection.',
+}
+
+export function parseExactJson(text: string): unknown {
+  return parse(text, null, { parseNumber: (source) =>
+    /^-?\d+$/.test(source) && !Number.isSafeInteger(Number(source)) ? BigInt(source) : Number(source) })
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -156,12 +169,34 @@ async function request<T>(
     let body: unknown
     if (response.status !== 204) {
       try {
-        body = await response.json()
+        if (path.startsWith('/api/v1/metadata/')) {
+          const reader = response.body?.getReader()
+          if (!reader) malformed('metadata JSON')
+          const chunks: Uint8Array[] = []
+          let bytes = 0
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            bytes += value.byteLength
+            if (bytes > 2 * 1024 * 1024) {
+              await reader.cancel()
+              throw new ApiError('malformed', 'Metadata response exceeds the 2 MiB page budget. Narrow the request.')
+            }
+            chunks.push(value)
+          }
+          const combined = new Uint8Array(bytes)
+          let offset = 0
+          for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.byteLength }
+          body = parseExactJson(new TextDecoder().decode(combined))
+        } else {
+          body = await response.json()
+        }
       } catch (error) {
         if (!(error instanceof SyntaxError)) throw error
         if (!response.ok) throw httpError(response, undefined)
         malformed('JSON')
       }
+
     }
     controller.signal.throwIfAborted()
     if (!response.ok && !(path === '/health/ready' && response.status === 503)) {
@@ -181,6 +216,13 @@ async function request<T>(
     clearTimeout(timer)
     signal?.removeEventListener('abort', cancel)
   }
+}
+
+export function metadataGet<T>(path: MetadataPath, decode: (body: unknown) => T, signal: AbortSignal): Promise<T> {
+  return request(path, { method: 'GET' }, (body, status) => {
+    if (status !== 200) malformed('metadata')
+    return decode(body)
+  }, signal)
 }
 
 export function signIn(username: string, password: string, signal?: AbortSignal): Promise<SignInResult> {

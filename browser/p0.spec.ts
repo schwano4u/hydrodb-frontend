@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test'
-import { test, expect, readerPassword } from './fixtures'
+import { test, expect, readerPassword, openIdentity, selectMenu } from './fixtures'
 
 const allowed = new Set([
   'POST /api/v1/auth/sessions', 'GET /api/v1/auth/me',
@@ -34,14 +34,16 @@ test.afterEach(async ({ page }) => {
 })
 
 async function login(page: Page) {
+  await openIdentity(page)
   await page.getByLabel('Username', { exact: true }).fill('browser-test-reader')
   await page.getByLabel('Password', { exact: true }).fill(await readerPassword())
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await selectMenu(page, 'Tools', 'Health')
   await expect(page.getByText('Authenticated database read succeeded', { exact: true })).toBeVisible()
 }
 
 async function tabTo(page: Page, control: Locator) {
-  for (let attempt = 0; attempt < 8; attempt++) {
+  for (let attempt = 0; attempt < 40; attempt++) {
     if (await control.evaluate((element) => element === document.activeElement)) break
     await page.keyboard.press('Tab')
   }
@@ -53,11 +55,31 @@ test('verified HTTPS, native zoom, keyboard login, restoration and confirmed log
   await expect(page.getByText('Backend/database ready', { exact: true })).toBeVisible()
   const metrics = await page.evaluate(() => ({
     dpr: devicePixelRatio, width: innerWidth, scroll: document.documentElement.scrollWidth,
+    applicationWidth: document.querySelector('.application')!.getBoundingClientRect().width,
+    contentWidth: document.documentElement.clientWidth,
   }))
   expect(metrics.dpr).toBeCloseTo(Number(testInfo.project.metadata.zoom ?? 1), 1)
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.width)
+  expect(metrics.applicationWidth).toBe(metrics.contentWidth)
   console.log(`${browserName}: ${await page.evaluate(() => navigator.userAgent)}; native zoom=${metrics.dpr}`)
   await page.keyboard.press('Tab')
+  for (const title of ['Settings']) {
+    const control = page.getByRole('button', { name: title, exact: true })
+    await expect(control).toBeFocused()
+    await page.keyboard.press('Enter')
+    const popup = page.getByRole('dialog', { name: title, exact: true })
+    await expect(popup).toBeVisible()
+    await expect(popup.getByText(/will be available here/)).toBeVisible()
+    await expect(popup.getByRole('button', { name: `Close ${title.toLowerCase()}` })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(popup).not.toBeVisible()
+    await expect(control).toBeFocused()
+    await page.keyboard.press('Tab')
+  }
+  await expect(page.getByRole('button', { name: 'User identity', exact: true })).toBeFocused()
+  await expect(page.locator('.identity-label')).toHaveCSS('clip-path', 'inset(50%)')
+  await expect(page.getByRole('button', { name: 'User identity', exact: true })).toHaveCSS('border-top-width', '0px')
+  await page.keyboard.press('Enter')
   await expect(page.getByLabel('Username', { exact: true })).toBeFocused()
   expect(await page.evaluate(() => getComputedStyle(document.activeElement!).outlineWidth)).toBe('3px')
   await page.keyboard.type('browser-test-reader')
@@ -71,39 +93,54 @@ test('verified HTTPS, native zoom, keyboard login, restoration and confirmed log
   await page.keyboard.type(await readerPassword())
   await page.keyboard.press('Tab')
   await page.keyboard.press('Enter')
+  await selectMenu(page, 'Tools', 'Health')
   await expect(page.getByText('Authenticated database read succeeded', { exact: true })).toBeVisible()
   const cookie = (await context.cookies()).find((item) => item.name === 'hydrodb_session')
   expect(Boolean(cookie?.httpOnly && cookie.secure && cookie.sameSite === 'Strict')).toBe(true)
   expect(await page.evaluate(() => !document.cookie.includes('hydrodb_session'))).toBe(true)
-  expect(await page.evaluate(() => Object.keys(localStorage).length + Object.keys(sessionStorage).length)).toBe(0)
+  expect(await page.evaluate(() =>
+    Object.keys(localStorage).every((key) => key.startsWith('hydrodb.workspace:')) &&
+    Object.keys(sessionStorage).length === 0)).toBe(true)
   await page.reload()
-  await expect(page.getByText('Browser Test Reader', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'User identity', exact: true })).toContainText('browser-test-reader')
   await expect(page.getByText('Authenticated database read succeeded', { exact: true })).toBeVisible()
   await expect(page.getByText('0.1.0', { exact: true })).toBeVisible()
   await expect(page.getByText('25', { exact: true })).toBeVisible()
   const firstTime = await page.locator('time').getAttribute('datetime')
-  await page.keyboard.press('Tab')
-  await expect(page.getByRole('button', { name: 'Check session', exact: true })).toBeFocused()
-  await page.keyboard.press('Tab')
+  await tabTo(page, page.getByRole('button', { name: 'User identity', exact: true }))
+  await expect(page.getByRole('button', { name: 'User identity', exact: true })).toBeFocused()
+  await page.keyboard.press('Enter')
   await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeFocused()
-  await page.keyboard.press('Tab')
-  await expect(page.getByRole('button', { name: 'Check health again', exact: true })).toBeFocused()
+  await expect(page.getByRole('dialog', { name: 'User identity', exact: true }).getByRole('button', { name: 'Check session', exact: true })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  const health = page.getByRole('region', { name: 'Backend and database health', exact: true })
+  await tabTo(page, health.getByRole('button', { name: 'Check session', exact: true }))
+  const sessionCheck = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/v1/auth/me' && response.request().method() === 'GET')
+  await page.keyboard.press('Enter')
+  expect((await sessionCheck).status()).toBe(200)
+  await expect(health.getByText('Authenticated database read succeeded', { exact: true })).toBeVisible()
+  await tabTo(page, page.getByRole('button', { name: 'Check health again', exact: true }))
   await page.keyboard.press('Enter')
   await expect(page.getByText('Authenticated database read succeeded', { exact: true })).toBeVisible()
   expect(await page.locator('time').getAttribute('datetime')).not.toBe(firstTime)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   const csrfDenied = await context.request.delete('/api/v1/auth/sessions/current')
   expect(csrfDenied.status()).toBe(403)
-  await tabTo(page, page.getByRole('button', { name: 'Sign out', exact: true }))
+  await tabTo(page, page.getByRole('button', { name: 'User identity', exact: true }))
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeFocused()
   await page.keyboard.press('Enter')
   await expect(page.getByText('Signed out. Server session revoked.', { exact: true })).toBeVisible()
   expect((await context.request.get('/api/v1/auth/me')).status()).toBe(401)
   await page.reload()
+  await openIdentity(page)
   await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible()
 })
 
 test('throttled, unavailable and uncertain sign-in results are distinct and never auto-retried', async ({ page }) => {
   await page.goto('/')
+  await openIdentity(page)
   await expect(page.getByLabel('Password', { exact: true })).toBeVisible()
   let submissions = 0
   for (const scenario of ['throttle', 'unavailable', 'network', 'malformed']) {
@@ -150,6 +187,7 @@ test('readiness reasons, failed logout, authenticated denial and expiry remain e
   await expect(page.getByText('API process reachable', { exact: true })).toBeVisible()
   await page.unroute('**/health/ready')
   await page.route('**/api/v1/auth/sessions/current', (route) => route.abort('failed'))
+  await openIdentity(page)
   await page.getByRole('button', { name: 'Sign out', exact: true }).click()
   await expect(page.getByText(/server-session revocation is not confirmed/)).toBeVisible()
   await expect(page.getByText('Browser Test Reader', { exact: true })).toBeVisible()

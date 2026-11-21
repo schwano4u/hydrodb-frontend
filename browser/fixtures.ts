@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test as base, expect } from '@playwright/test'
-import type { BrowserContext } from '@playwright/test'
+import type { BrowserContext, Page } from '@playwright/test'
 
 const target = '/home/ubuntu/hydrodb/staging/test/hydrodb-empty-test'
 const ca = process.env.HYDRODB_BROWSER_CA_FILE ?? `${target}/tls/ca.crt`
@@ -70,6 +70,37 @@ export const test = base.extend({
 export async function readerPassword(): Promise<string> {
   const file = process.env.HYDRODB_BROWSER_PASSWORD_FILE ?? `${target}/frontend/reader-password`
   return (await readFile(file, 'utf8')).trim()
+}
+
+export async function openIdentity(page: Page) {
+  const control = page.getByRole('button', { name: 'User identity', exact: true })
+  if (await control.getAttribute('aria-expanded') !== 'true') await control.click()
+}
+
+export async function selectMenu(page: Page, title: string, name: string) {
+  const trigger = page.getByRole('menubar', { name: 'Application menu' }).getByRole('menuitem', { name: title, exact: true })
+  await expect(trigger).toBeEnabled()
+  await trigger.focus()
+  await page.keyboard.press('Enter')
+  const menu = page.getByRole('menu', { name: title, exact: true })
+  await expect(menu).toBeVisible()
+  await expect(menu.locator('button:not(:disabled)').first()).toBeFocused()
+  const item = menu.getByRole('menuitem', { name, exact: true }).or(menu.getByRole('menuitemcheckbox', { name, exact: true }))
+  await expect(item).toBeEnabled()
+  await item.focus()
+  await page.keyboard.press('Enter')
+}
+
+export async function selectView(page: Page, name: string) {
+  if (name === 'Filters' || name === 'Tree view') {
+    const tab = page.getByRole('tab', { name, exact: true })
+    if (!await tab.count()) await selectMenu(page, 'View', 'Metadata')
+    const panel = page.getByRole('article', { name: name === 'Filters' ? 'Metadata filters' : 'Tree view', exact: true })
+    if (await panel.isVisible()) await tab.focus()
+    else await tab.click()
+    return
+  }
+  await selectMenu(page, 'View', name)
 }
 
 export { expect }
