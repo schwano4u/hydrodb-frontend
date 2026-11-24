@@ -24,11 +24,11 @@ class WorkspaceBoundary extends Component<{ children: ReactNode; health: ReactNo
   }
 }
 
-export default function WorkspaceSlot({ principalId, onSessionExpired, health, menuHost }: { principalId: string; onSessionExpired: () => void; health: ReactNode; menuHost?: HTMLElement | null }) {
+export default function WorkspaceSlot({ principalId, csrfToken, onSessionExpired, health, menuHost }: { principalId: string; csrfToken: string; onSessionExpired: () => void; health: ReactNode; menuHost?: HTMLElement | null }) {
   return (
     <WorkspaceBoundary health={health} menuHost={menuHost}>
       <Suspense fallback={<><p role="status">Opening the read-only workspace...</p>{health}{menuHost && createPortal(<WorkspaceMenus />, menuHost)}</>}>
-        <Workspace principalId={principalId} onSessionExpired={onSessionExpired} health={health} menuHost={menuHost} />
+        <Workspace principalId={principalId} csrfToken={csrfToken} onSessionExpired={onSessionExpired} health={health} menuHost={menuHost} />
       </Suspense>
     </WorkspaceBoundary>
   )

@@ -1,0 +1,3 @@
+export default function DownloadIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" /></svg>
+}

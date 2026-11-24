@@ -23,7 +23,7 @@ https://{$HYDRODB_PUBLIC_HOST}:8443 {
 		}
 		file_server
 	}
-	@frontend path / /index.html /hydrodb.svg
+	@frontend path / /index.html /popout.html /hydrodb.svg
 	handle @frontend {
 		root * /srv/hydrodb-frontend/current
 		header {
@@ -34,7 +34,9 @@ https://{$HYDRODB_PUBLIC_HOST}:8443 {
 		}
 		file_server
 	}
+	@catalogBrowser path /api/v1/metadata/browser
 	handle {
+		encode @catalogBrowser zstd gzip
 		reverse_proxy app:8080 {
 			header_up X-Forwarded-For {remote_host}
 		}

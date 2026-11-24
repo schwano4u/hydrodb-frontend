@@ -6,7 +6,7 @@ import {
 import type { Collection, DetailSelection, Json, MetadataClient, MetadataNode, Reference, Selection } from './metadata'
 import { NodeLink } from './MetadataBrowser'
 import { useMetadataRead } from './useMetadataRead'
-import { ApiError } from './api'
+import { ApiError, timestamp } from './api'
 import type { MetadataPath } from './api'
 
 const nodes = (body: unknown) => decodePage(body, decodeNode)
@@ -33,7 +33,44 @@ const context = (body: unknown): { content: Json; links: Reference[] } => {
   }
   return { content, links }
 }
-type Props = { selection: DetailSelection; client: MetadataClient; onExpired: () => void; onOpen: (selection: DetailSelection) => void }
+type Props = {
+  selection: DetailSelection; client: MetadataClient; onExpired: () => void
+  onOpen: (selection: DetailSelection) => void
+}
+
+function decodeCoverage(body: unknown) {
+  if (!object(body) || typeof body.series_id !== 'string') {
+    throw new ApiError('malformed', 'Invalid Series coverage.')
+  }
+  const first = body.first_sample_at
+  const last = body.last_sample_at
+  if (first === null && last === null) return { id: body.series_id, first, last }
+  if (!timestamp(first) || !timestamp(last) || Date.parse(first) > Date.parse(last)) {
+    throw new ApiError('malformed', 'Invalid Series coverage bounds.')
+  }
+  return { id: body.series_id, first, last }
+}
+
+function Coverage({ selection, client, onExpired }: Props) {
+  const path: MetadataPath = `/api/v1/series/${encodeURIComponent(selection.id)}/coverage?${new URLSearchParams({ read_cutoff: selection.cutoff })}`
+  const result = useMetadataRead(path, decodeCoverage, client, onExpired)
+  const bounds = result.data
+  const error = result.error ?? (bounds && bounds.id !== selection.id ? 'The API returned coverage for a different series.' : null)
+  return <section aria-label="Series data span">
+    <h6>Data span</h6>
+    {result.loading && <p role="status">Loading sample span...</p>}
+    {error && <p role="alert">{error} <button type="button" onClick={result.retry}>Retry coverage</button></p>}
+    {!error && bounds && (bounds.first && bounds.last
+      ? <>
+        <dl className="metadata-fields">
+          <div><dt>First sample (UTC)</dt><dd><time dateTime={bounds.first}>{bounds.first}</time></dd></div>
+          <div><dt>Last sample (UTC)</dt><dd><time dateTime={bounds.last}>{bounds.last}</time></dd></div>
+        </dl>
+        <p>Sample timestamps across all Series versions. The span can contain gaps and missing values.</p>
+      </>
+      : <p>No sample records at this read cutoff.</p>)}
+  </section>
+}
 
 function Retained({ node, selection, client, onExpired, onOpen }: Props & { node: MetadataNode }) {
   const [after, setAfter] = useState('')
@@ -107,7 +144,6 @@ export default function MetadataDetail(props: Props) {
   const { selection, client, onExpired, onOpen } = props
   const query: Selection = { filters: [], q: '', asOf: selection.asOf }
   const result = useMetadataRead(catalogPath(query, selection.collection, { mode: 'detail', id: selection.id, version: selection.version }, selection.cutoff), nodes, client, onExpired)
-  const [notice, setNotice] = useState('')
   const node = result.data?.items[0]
   const open = (ref: Reference) => onOpen({ ...ref, cutoff: selection.cutoff, asOf: selection.asOf })
   return <article className="metadata-panel" aria-label="Metadata detail">
@@ -118,14 +154,7 @@ export default function MetadataDetail(props: Props) {
     {node && <>
       <h5>{name(node)}</h5>
       <p>{node.status} / identified retained version {nodeVersion(node)}</p>
-      <button type="button" onClick={() => {
-        if (!navigator.clipboard) { setNotice('Clipboard is unavailable. Select and copy the visible stable ID manually.'); return }
-        void navigator.clipboard.writeText(identity(node)).then(
-          () => setNotice('Stable ID copied.'),
-          () => setNotice('Copy failed. Select and copy the visible stable ID manually.'),
-        )
-      }}>Copy stable ID</button>
-      {notice && <p role="status">{notice}</p>}
+      {node.collection === 'series' && <Coverage {...props} />}
       {node.collection === 'stations' && <p>{!selection.asOf && node.position_scope === 'current_only'
         ? 'Current coordinates only. These coordinates do not describe an earlier observation or cutoff.'
         : 'Historical coordinates unavailable. No current coordinates have been substituted.'}</p>}

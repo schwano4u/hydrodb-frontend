@@ -72,6 +72,24 @@ export async function readerPassword(): Promise<string> {
   return (await readFile(file, 'utf8')).trim()
 }
 
+export async function fixtureReader(page: Page) {
+  await page.route('**/api/v1/status', (route) => route.fulfill({ json: {
+    service: 'hydrodb', version: 'fixture', schema_version: 31,
+  } }))
+  await page.route('**/api/v1/series/coverage?**', (route) => {
+    const params = new URL(route.request().url()).searchParams
+    const ids: string[] = JSON.parse(params.get('series_ids') ?? '[]')
+    return route.fulfill({ json: { items: ids.map((series_id) => ({
+      series_id, status: 'available', first_sample_at: null, last_sample_at: null,
+    })) } })
+  })
+  await page.route('**/api/v1/auth/me', (route) => route.fulfill({ json: {
+    principal_id: 'f3d53263-1166-40cf-b856-30093df11d6d', kind: 'user', display_name: 'Fixture Reader', username: 'reader',
+    credential: { type: 'session', csrf_token: 'c'.repeat(43),
+      absolute_expires_at: '2099-11-24T08:00:00Z', idle_expires_at: '2099-11-24T08:00:00Z' },
+  } }))
+}
+
 export async function openIdentity(page: Page) {
   const control = page.getByRole('button', { name: 'User identity', exact: true })
   if (await control.getAttribute('aria-expanded') !== 'true') await control.click()

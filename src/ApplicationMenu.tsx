@@ -1,9 +1,10 @@
 import { useId, useRef } from 'react'
-import type { KeyboardEvent, Ref } from 'react'
+import type { KeyboardEvent, ReactNode, Ref } from 'react'
 
-export type MenuItem = { label: string; action?: () => void; checked?: boolean; disabled?: boolean } | { separator: true }
+export type MenuItem = { label: string; action?: () => void; checked?: boolean; disabled?: boolean } | { separator: true } |
+  { heading: string; items: MenuItem[] }
 
-function Menu({ title, items, disabled = false }: { title: string; items: MenuItem[]; disabled?: boolean }) {
+export function Menu({ title, items, disabled = false, onOpen }: { title: string; items: MenuItem[]; disabled?: boolean; onOpen?: () => void }) {
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null)
   const popup = useRef<HTMLDivElement>(null)
@@ -39,14 +40,31 @@ function Menu({ title, items, disabled = false }: { title: string; items: MenuIt
     }
   }
 
+  function renderItems(items: MenuItem[]) {
+    return items.map((item, index): React.ReactNode => 'separator' in item ? <hr key={index} role="separator" /> :
+      'heading' in item ? <div key={item.heading} role="group" aria-label={item.heading}>
+        <span className="menu-heading" aria-hidden="true">{item.heading}</span>{renderItems(item.items)}
+      </div> :
+        <button key={item.label} type="button" role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
+          aria-checked={item.checked} disabled={item.disabled} onClick={() => {
+            popup.current?.hidePopover()
+            item.action?.()
+          }}>
+          <span className="menu-check" aria-hidden="true">{item.checked &&
+            <svg viewBox="0 0 16 16"><path d="m3 8 3 3 7-7" /></svg>}</span>
+          {item.label}
+        </button>)
+  }
+
   return <div className="application-menu-entry" onKeyDown={keyboard}>
     <button type="button" role="menuitem" data-menu-trigger aria-haspopup="menu" disabled={disabled}
       popoverTarget={id} ref={trigger}>
-      {title}{title === 'View' && <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>}
+      {title}{(title === 'View' || title === 'Layout' || title === 'Tools') && <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>}
     </button>
     <div id={id} role="menu" aria-label={title} className="menu-popup" popover="auto" ref={popup} tabIndex={-1}
       onToggle={(event) => {
         if (event.newState !== 'open') return
+        onOpen?.()
         const menu = event.currentTarget
         const bounds = trigger.current!.getBoundingClientRect()
         menu.style.left = `${Math.max(8, Math.min(bounds.left, window.innerWidth - menu.offsetWidth - 8))}px`
@@ -56,26 +74,22 @@ function Menu({ title, items, disabled = false }: { title: string; items: MenuIt
         ;(controls[last.current ? controls.length - 1 : 0] ?? menu).focus()
         last.current = false
       }}>
-      {items.map((item, index) => 'separator' in item ? <hr key={index} role="separator" /> :
-        <button key={item.label} type="button" role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
-          aria-checked={item.checked} disabled={item.disabled} onClick={() => {
-            popup.current?.hidePopover()
-            item.action?.()
-          }}>
-          <span className="menu-check" aria-hidden="true">{item.checked &&
-            <svg viewBox="0 0 16 16"><path d="m3 8 3 3 7-7" /></svg>}</span>
-          {item.label}
-        </button>)}
+      {renderItems(items)}
     </div>
   </div>
 }
 
-export function WorkspaceMenus({ items = [], onHealth, healthOpen = false }: {
-  items?: MenuItem[]; onHealth?: () => void; healthOpen?: boolean
+export function WorkspaceMenus({ items = [], layoutMenu, onHealth, healthOpen = false, onJobs, jobsOpen = false }: {
+  layoutMenu?: ReactNode
+  items?: MenuItem[]; onHealth?: () => void; healthOpen?: boolean; onJobs?: () => void; jobsOpen?: boolean
 }) {
   return <>
     <Menu title="View" items={items} disabled={!items.length} />
-    <Menu title="Tools" disabled={!onHealth} items={[{ label: 'Health', checked: healthOpen, action: onHealth }]} />
+    {layoutMenu}
+    <Menu title="Tools" disabled={!onHealth && !onJobs} items={[
+      { label: 'Health', checked: healthOpen, action: onHealth, disabled: !onHealth },
+      { label: 'Jobs', checked: jobsOpen, action: onJobs, disabled: !onJobs },
+    ]} />
   </>
 }
 

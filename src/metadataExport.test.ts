@@ -4,6 +4,7 @@ import { parquetReadObjects } from 'hyparquet'
 import { exportMetadata } from './metadataExport'
 import { MetadataClient } from './metadata'
 import type { Selection } from './metadata'
+import { defaultTableSettings, tableExportColumns } from './metadataTable'
 
 const selection: Selection = { filters: [{ collection: 'stations', field: 'station_id', values: ['A', 'B'] }], q: '', asOf: '' }
 function station(id: string, external = '=SUM(1,2)') {
@@ -32,6 +33,23 @@ const options = () => ({
 })
 
 describe('all matching metadata exports', () => {
+  it('exports selected optional series attributes alongside the default fields', async () => {
+    vi.stubGlobal('window', { location: { origin: 'https://test' } })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      items: [{ collection: 'series', status: 'active', position_scope: 'unavailable', references: [],
+        item: { series_id: 'minute', series_metadata_version: 1, series_validity_start: '2026-11-22T00:00:00Z',
+          series_sampling_interval: 'PT60S', series_period_definition: null,
+          series_sampling_alignment: { origin: '1970-01-01T00:00:00Z' } } }],
+      next_after: null, read_cutoff: 'fixed',
+    })))
+    const table = defaultTableSettings('series')
+    const columns = tableExportColumns('series', { ...table, visible: [...table.visible, 'series_period_definition', 'series_sampling_alignment', 'status'] })
+    const blob = await exportMetadata({ ...options(), collection: 'series', columns, format: 'json' })
+    const result = JSON.parse(await blob.text())
+    expect(result.rows[0]).toMatchObject({ series_sampling_interval: 'PT60S', series_period_definition: null,
+      series_sampling_alignment: { origin: '1970-01-01T00:00:00Z' }, status: 'active' })
+  })
+
   it('downloads all pages as structured JSON with exact values and one filter/cutoff context', async () => {
     const requests = fixture()
     const blob = await exportMetadata({ ...options(), format: 'json' })
@@ -53,18 +71,21 @@ describe('all matching metadata exports', () => {
     expect(csv).toContain('"Name, ""quoted""\nline","B"')
   })
 
-  it.each(['csv', 'json', 'parquet'] as const)('exports only enabled columns and passes global sort to every %s page', async (format) => {
+  it.each(['csv', 'json', 'parquet'] as const)('exports only enabled columns and passes sort and status to every %s page', async (format) => {
     const requests = fixture()
-    const blob = await exportMetadata({ ...options(), format, columns: ['id', 'station_location'], sort: { column: 'name', direction: 'desc' } })
+    const blob = await exportMetadata({ ...options(), selection: { ...selection, instanceStatus: 'active' },
+      format, columns: ['id', 'station_location'], sort: { column: 'name', direction: 'desc' } })
     if (format === 'json') {
       const data = JSON.parse(await blob.text())
       expect(data.columns).toEqual(['id', 'station_location'])
       expect(Object.keys(data.rows[0])).toEqual(['id', 'station_location'])
       expect(data.sort).toEqual({ column: 'name', direction: 'desc' })
+      expect(data.status).toBe('active')
     } else if (format === 'csv') expect((await blob.text()).split('\r\n')[0]).toBe('"id","station_location"')
     else expect(Object.keys((await parquetReadObjects({ file: await blob.arrayBuffer() }))[0]!)).toEqual(['id', 'station_location'])
     expect(requests).toHaveLength(2)
-    expect(requests.every((url) => url.searchParams.get('sort') === 'name' && url.searchParams.get('order') === 'desc')).toBe(true)
+    expect(requests.every((url) => url.searchParams.get('sort') === 'name' && url.searchParams.get('order') === 'desc' &&
+      url.searchParams.get('status') === 'active')).toBe(true)
   })
 
   it('writes readable Parquet for all pages, including exact strings and an empty result', async () => {

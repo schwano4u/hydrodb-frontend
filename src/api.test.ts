@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  ApiError, checkLiveness, checkReadiness, getCurrentSession, getDatabaseStatus, signIn, signOut,
+  ApiError, checkLiveness, checkReadiness, getCurrentSession, getDatabaseStatus, sampleGet, signIn, signOut,
 } from './api'
 
 const id = 'f3d53263-1166-40cf-b856-30093df11d6d'
@@ -27,6 +27,19 @@ function respond(body: unknown, status = 200, headers?: HeadersInit) {
 afterEach(() => vi.useRealTimers())
 
 describe('P0 transport', () => {
+  it('reads samples as exact bounded JSON without changing session transport behavior', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('{"value":9223372036854775807}'))
+    vi.stubGlobal('fetch', fetch)
+    const path = '/api/v1/series/A/samples?start=2026-11-20T00%3A00%3A00Z&end=2026-11-21T00%3A00%3A00Z'
+    const result = await sampleGet(path, (body) => body, new AbortController().signal)
+    expect(result).toEqual({ value: 9223372036854775807n })
+    expect(fetch).toHaveBeenCalledWith(path, expect.objectContaining({
+      method: 'GET', credentials: 'same-origin', mode: 'same-origin', redirect: 'error', cache: 'no-store',
+    }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(`{"noise":"${'x'.repeat(2 * 1024 * 1024)}"}`)))
+    await expect(sampleGet(path, (body) => body, new AbortController().signal)).rejects.toThrow('Sample response exceeds the 2 MiB')
+  })
+
   it('uses the cookie session protocol without credentials in URLs or extra operations', async () => {
     const fetchMock = respond(login)
     expect(await signIn('reader', 'password')).toEqual(login)

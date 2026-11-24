@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { test, expect, openIdentity, readerPassword, selectView } from './fixtures'
 import type { Filter } from '../src/metadata'
+import { readFile } from 'node:fs/promises'
 
 async function login(page: Page) {
   await page.goto('/')
@@ -32,7 +33,7 @@ test('Map reads beyond 50 stations, follows filter selections, retains edge tool
   await page.route('**/api/v1/metadata/browser?**', async (route) => {
     const query = new URL(route.request().url()).searchParams
     const mode = query.get('mode') ?? 'instances'
-    if (stationFailure && mode === 'instances' && query.get('collection') === 'stations') {
+    if (stationFailure && mode === 'map' && query.get('collection') === 'stations') {
       await route.fulfill({ status: 403, json: { code: 'FORBIDDEN', message: 'Map station fixture unavailable', request_id: null } })
       return
     }
@@ -43,7 +44,7 @@ test('Map reads beyond 50 stations, follows filter selections, retains edge tool
         matching = matching.filter((station) => filter.values.includes(station.item.station_id))
       }
     }
-    const size = Number(query.get('limit'))
+    const size = mode === 'map' ? Math.min(50, Number(query.get('limit'))) : Number(query.get('limit'))
     const start = query.has('page') ? (Number(query.get('page')) - 1) * size
       : query.get('after') ? matching.findIndex((station) => station.item.station_id === query.get('after')) + 1 : 0
     if (mode === 'values') {
@@ -75,7 +76,7 @@ test('Map reads beyond 50 stations, follows filter selections, retains edge tool
   expect(countBounds.y + countBounds.height).toBeLessThanOrEqual(mapBounds.y)
   await expect(map.locator('.ol-viewport')).toHaveCount(1)
   await expect(map.locator('.leaflet-container')).toHaveCount(0)
-  await expect(map.getByRole('button', { name: 'Reload map', exact: true })).toHaveCSS('height', '36px')
+  await expect(map.getByRole('button', { name: 'Reload map', exact: true })).toHaveCSS('height', '32px')
   const reloadBounds = (await map.getByRole('button', { name: 'Reload map', exact: true }).boundingBox())!
   expect(countBounds.x + countBounds.width).toBeLessThanOrEqual(reloadBounds.x)
   expect(countBounds.y + countBounds.height / 2).toBeCloseTo(reloadBounds.y + reloadBounds.height / 2, 0)
@@ -84,7 +85,7 @@ test('Map reads beyond 50 stations, follows filter selections, retains edge tool
   await expect(reload).toHaveClass('reload-icon')
   await expect(reload.locator('path')).toHaveCount(4)
   await expect(reload).toHaveCSS('stroke-width', '2px')
-  await expect(map.getByRole('button', { name: 'Zoom in', exact: true })).toHaveCSS('height', '36px')
+  await expect(map.getByRole('button', { name: 'Zoom in', exact: true })).toHaveCSS('height', '32px')
   await expect(map.getByRole('button', { name: 'Zoom in', exact: true })).toHaveCSS('font-size', '24px')
   await expect(map.locator('.station-map-marker')).toHaveCount(50)
   await expect(map.getByRole('button', { name: 'Station 50 / S50', exact: true })).toBeVisible()
@@ -98,6 +99,23 @@ test('Map reads beyond 50 stations, follows filter selections, retains edge tool
   await expect(map.getByRole('link', { name: 'OpenStreetMap', exact: true })).toBeVisible()
   await expect.poll(() => tileRequests.length).toBeGreaterThan(0)
   expect(tileRequests.every((referer) => referer === new URL(page.url()).origin + '/')).toBe(true)
+  const download = map.getByRole('button', { name: 'Download map', exact: true })
+  await expect(download).toHaveCSS('height', '32px')
+  await expect(download.locator('svg')).toHaveCSS('height', '24px')
+  await download.click()
+  const formats = map.getByRole('dialog', { name: 'Download format', exact: true })
+  await expect(formats.getByRole('button', { name: 'GEOJSON', exact: true })).toBeFocused()
+  await expect(formats.getByRole('button', { name: 'CSV', exact: true })).toHaveCount(0)
+  const downloaded = page.waitForEvent('download')
+  await formats.getByRole('button', { name: 'GEOJSON', exact: true }).click()
+  const file = await downloaded
+  expect(file.suggestedFilename()).toBe('hydrodb-stations.geojson')
+  const geojson = JSON.parse(await readFile((await file.path())!, 'utf8'))
+  expect(geojson.type).toBe('FeatureCollection')
+  expect(geojson.read_cutoff).toBe('map-cutoff')
+  expect(geojson.features).toHaveLength(51)
+  expect(geojson.features[50].geometry.coordinates).toEqual([8.05, 53.05])
+  expect(geojson.features[49].geometry).toBeNull()
   const filters = page.getByRole('article', { name: 'Metadata filters', exact: true })
   await filters.getByLabel('Station 0 / S00', { exact: true }).check()
   await expect(map.locator('.station-map-marker')).toHaveCount(1)
@@ -111,7 +129,7 @@ test('Map reads beyond 50 stations, follows filter selections, retains edge tool
   await expect(selected).toHaveClass('station-map-marker is-selected')
   await expect(selected.locator('svg')).not.toHaveCSS('filter', 'none')
   const closePopup = map.getByRole('button', { name: 'Close station popup', exact: true })
-  await expect(closePopup).toHaveCSS('height', '36px')
+  await expect(closePopup).toHaveCSS('height', '32px')
   await closePopup.click()
   await expect(selected).toHaveAttribute('aria-pressed', 'false')
   await expect(selected).toBeFocused()

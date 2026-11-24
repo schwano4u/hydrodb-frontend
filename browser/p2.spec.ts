@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import { parquetReadObjects } from 'hyparquet'
-import { test, expect, readerPassword, openIdentity, selectView } from './fixtures'
+import { test, expect, fixtureReader, readerPassword, openIdentity, selectView } from './fixtures'
 import { entities } from '../src/metadata'
 import type { Collection } from '../src/metadata'
 
@@ -44,7 +44,8 @@ async function login(page: Page) {
         items: [{ collection: 'series', status: 'active', position_scope: 'unavailable', references: [],
           item: { series_id: second ? 'row-2' : 'row-1', series_name: second ? 'Zulu' : '=Formula, "quoted"',
             series_metadata_version: '9223372036854775807', series_validity_start: '2026-11-20T12:00:00.123456Z',
-            series_sampling_definition: { exact: '9223372036854775807', nested: [null, true] } } }],
+            series_sampling_definition: { exact: '9223372036854775807', nested: [null, true] },
+            series_sampling_interval: 'PT60S' } }],
         next_after: last ? null : 'next', read_cutoff: 'export-cutoff', total: 2,
       } })
     })
@@ -59,16 +60,16 @@ async function login(page: Page) {
     const reloadBounds = (await browser.getByRole('button', { name: 'Reload', exact: true }).boundingBox())!
     const downloadBounds = (await browser.getByRole('button', { name: 'Download table', exact: true }).boundingBox())!
     for (const bounds of [instanceBounds, columnsBounds, reloadBounds, downloadBounds]) {
-      expect(bounds.height).toBeCloseTo(36, 1)
+      expect(bounds.height).toBeCloseTo(32, 1)
     }
     for (const icon of await toolbar.locator('.metadata-reload svg').all()) {
       await expect(icon).toHaveCSS('width', '24px')
       await expect(icon).toHaveCSS('height', '24px')
     }
     await expect(browser.getByRole('button', { name: 'Columns', exact: true }).locator('svg')).toHaveCSS('height', '16px')
-    await expect(browser.locator('.metadata-pagination select')).toHaveCSS('height', '36px')
+    await expect(browser.locator('.metadata-pagination select')).toHaveCSS('height', '26px')
     for (const button of await browser.locator('.metadata-page-navigation button').all()) {
-      await expect(button).toHaveCSS('height', '36px')
+      await expect(button).toHaveCSS('height', '32px')
       await expect(button.locator('svg')).toHaveCSS('height', '24px')
     }
     const selectorStyle = await browser.getByLabel('Instance type', { exact: true }).evaluate((element) => {
@@ -101,14 +102,14 @@ async function login(page: Page) {
       expect(after[index]! / before[index]!).toBeCloseTo(after[2]! / before[2]!, 2)
     }
     expect((await browser.locator('table').boundingBox())!.width).toBeCloseTo(tableWidth, 0)
-    await expect(browser.getByRole('separator', { name: 'Resize series sampling definition' })).toHaveCount(0)
+    await expect(browser.getByRole('separator', { name: 'Resize period definition' })).toHaveCount(0)
     await browser.getByRole('button', { name: 'Columns', exact: true }).click()
     await expect(browser.getByRole('dialog', { name: 'Columns', exact: true })).toBeVisible()
     await expect(browser.getByRole('dialog', { name: 'Columns', exact: true }).getByRole('slider')).toHaveCount(0)
-    for (const field of ['station id', 'parameter id', 'unit id', 'series processing level', 'series value shape', 'series value statistic']) {
+    for (const field of ['station id', 'parameter id', 'unit id', 'processing level', 'value shape', 'value statistic', 'period definition']) {
       await browser.getByLabel(field, { exact: true }).uncheck()
     }
-    await expect(browser.locator('thead th')).toHaveCount(2)
+    await expect(browser.locator('thead th')).toHaveCount(3)
     await browser.getByRole('button', { name: 'Columns', exact: true }).click()
     const resize = browser.getByRole('separator', { name: 'Resize Name / stable ID' })
     const initialWidth = (await browser.locator('thead th').first().boundingBox())!.width
@@ -144,13 +145,15 @@ async function login(page: Page) {
         const json = JSON.parse(data.toString())
         expect(json.rows.map((row: { id: string }) => row.id)).toEqual(['row-2', 'row-1'])
         expect(json.read_cutoff).toBe('export-cutoff')
-        expect(json.columns).toEqual(['name', 'id', 'series_sampling_definition'])
+        expect(json.columns).toEqual(['name', 'id', 'series_sampling_definition', 'series_sampling_interval'])
+        expect(json.rows[0].series_sampling_interval).toBe('PT60S')
       } else {
         const file = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
         const rows = await parquetReadObjects({ file })
         expect(rows.map((row) => row.id)).toEqual(['row-2', 'row-1'])
-        expect(Object.keys(rows[0]!)).toEqual(['name', 'id', 'series_sampling_definition'])
+        expect(Object.keys(rows[0]!)).toEqual(['name', 'id', 'series_sampling_definition', 'series_sampling_interval'])
         expect(rows[0]?.series_sampling_definition).toBe('{"exact":"9223372036854775807","nested":[null,true]}')
+        expect(rows[0]?.series_sampling_interval).toBe('PT60S')
       }
       await expect(browser.getByText('Download prepared for all matching rows.', { exact: true })).toHaveText('Download prepared for all matching rows.')
       await download.delete()
@@ -239,7 +242,8 @@ test('filter chips and per-instance tree naming settings remain keyboard accessi
       next_after: null, read_cutoff: 'naming-cutoff', total: 1,
     } })
   })
-  await login(page)
+  await fixtureReader(page)
+  await page.goto('/')
   await selectView(page, 'Filters')
   const filters = page.getByRole('article', { name: 'Metadata filters', exact: true })
   const selectAll = filters.getByRole('checkbox', { name: 'Select all on this page', exact: true })
@@ -254,15 +258,17 @@ test('filter chips and per-instance tree naming settings remain keyboard accessi
   await filters.getByLabel('Station A', { exact: true }).check()
   await filters.getByLabel('Station B', { exact: true }).check()
   const remove = filters.getByRole('button', { name: 'Remove Stations: station id = A', exact: true })
-  for (const select of await filters.locator('select').all()) {
-    await expect(select).toHaveCSS('height', '36px')
-  }
+  await expect(filters.getByLabel('Filter attribute', { exact: true })).toHaveCSS('height', '32px')
+  await expect(filters.getByLabel('Rows per page', { exact: true })).toHaveCSS('height', '26px')
+  await expect(filters.getByRole('searchbox', { name: 'Search available values', exact: true })).toHaveCSS('height', '32px')
   const filterHelp = filters.getByRole('button', { name: 'Filter attribute help', exact: true })
   await expect(filterHelp).toHaveCSS('width', '24px')
   await expect(filterHelp).toHaveCSS('height', '24px')
-  await expect(remove).toHaveCSS('height', '36px')
+  await expect(filterHelp.locator('span')).toHaveCSS('font-size', '18px')
+  await expect(remove).toHaveCSS('height', '32px')
   await expect(remove).toHaveText('\u00d7')
   await expect(remove.locator('..')).toHaveText('station id = A\u00d7')
+  await expect(remove.locator('..')).toHaveCSS('height', '32px')
   const chipBounds = await remove.locator('..').boundingBox()
   const clearBounds = await filters.getByRole('button', { name: 'Clear all', exact: true }).boundingBox()
   expect(clearBounds!.height).toBeCloseTo(chipBounds!.height, 1)
@@ -284,8 +290,8 @@ test('filter chips and per-instance tree naming settings remain keyboard accessi
   const settings = treePanel.getByRole('button', { name: 'Tree naming settings', exact: true })
   const designBounds = (await design.boundingBox())!
   const settingsBounds = (await settings.boundingBox())!
-  expect(designBounds.height).toBeCloseTo(36, 1)
-  expect(settingsBounds.height).toBeCloseTo(36, 1)
+  expect(designBounds.height).toBeCloseTo(32, 1)
+  expect(settingsBounds.height).toBeCloseTo(32, 1)
   await expect(settings.locator('svg')).toHaveCSS('height', '24px')
   const settingsGraphics = await page.getByRole('button', { name: 'Settings', exact: true }).locator('svg')
     .or(settings.locator('svg')).evaluateAll((elements) => elements.map((element) => {
@@ -298,7 +304,7 @@ test('filter chips and per-instance tree naming settings remain keyboard accessi
     }))
   expect(settingsGraphics).toHaveLength(2)
   expect(settingsGraphics[0]).toEqual(settingsGraphics[1])
-  await expect(tree.getByRole('button', { name: 'Collapse stations name / stations-1', exact: true })).toHaveCSS('height', '36px')
+  await expect(tree.getByRole('button', { name: 'Collapse stations name / stations-1', exact: true })).toHaveCSS('height', '32px')
   expect(designBounds.x + designBounds.width).toBeLessThanOrEqual(settingsBounds.x)
   expect(designBounds.y + designBounds.height / 2).toBeCloseTo(settingsBounds.y + settingsBounds.height / 2, 0)
   await expect(settings).toHaveText('')
@@ -419,7 +425,7 @@ test('real authorized catalog pages, shared filters, linked details and Station 
   await selectView(page, 'Filters')
   const filters = page.getByRole('article', { name: 'Metadata filters', exact: true })
   const filterHelp = filters.getByRole('button', { name: 'Filter attribute help', exact: true })
-  const explanation = filters.getByText('Values within an attribute match any selection; different attributes must all match one declared metadata path. At most 12 attributes and 20 values per attribute.', { exact: true })
+  const explanation = filters.getByText('Values within an attribute match any selection. Different attributes must all match one declared metadata path. Select up to 12 attributes and 20 values per attribute.', { exact: true })
   await expect(explanation).toBeHidden()
   await filterHelp.focus()
   await filterHelp.press('Enter')
@@ -458,6 +464,7 @@ test('real authorized catalog pages, shared filters, linked details and Station 
   await available.getByRole('button', { name: 'Next page', exact: true }).click()
   await expect(choices.first().getByRole('checkbox')).toBeChecked()
   const valueSearch = filters.getByRole('searchbox', { name: 'Search available values' })
+  await expect(valueSearch).toHaveCSS('height', '32px')
   const attributeBounds = await filters.getByLabel('Filter attribute', { exact: true }).boundingBox()
   const searchBounds = await valueSearch.boundingBox()
   expect(searchBounds!.y).toBeGreaterThanOrEqual(attributeBounds!.y + attributeBounds!.height - 1)

@@ -1,0 +1,187 @@
+.components-demo {
+  width: min(100%, 1320px);
+  margin-inline: auto;
+  padding: clamp(16px, 3vw, 40px);
+  gap: 24px;
+}
+
+.components-demo-header h1 {
+  margin: 0;
+  font-size: clamp(1.65rem, 4vw, 2.5rem);
+  letter-spacing: -0.04em;
+}
+
+.components-demo-header p {
+  margin: 8px 0 0;
+  color: #526578;
+}
+
+.components-demo-catalog {
+  border: 1px solid #dbe4ec;
+  border-radius: 12px;
+  background: white;
+}
+
+.components-demo-columns,
+.components-demo-row {
+  display: grid;
+  grid-template-columns: minmax(132px, 1fr) minmax(0, 3fr) minmax(176px, 1.35fr);
+  align-items: start;
+  gap: clamp(16px, 2vw, 28px);
+  padding: 16px clamp(12px, 2vw, 24px);
+}
+
+.components-demo-columns {
+  border-radius: 11px 11px 0 0;
+  background: #eef3f7;
+  color: #334e65;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.components-demo-row + .components-demo-row {
+  border-top: 1px solid #dbe4ec;
+}
+
+.components-demo-row h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: normal;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.components-demo-example {
+  padding: 0;
+  height: auto;
+  overflow: visible;
+}
+
+.components-demo-notes {
+  margin: 0;
+  color: #526578;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.components-demo-example .metadata-toolbar,
+.components-demo-example .metadata-pagination {
+  margin: 0;
+}
+
+.components-demo-example .metadata-page-navigation {
+  flex-wrap: wrap;
+}
+
+.components-demo-action {
+  min-height: var(--control-height);
+  margin: 0;
+  padding: 4px 12px;
+}
+
+.components-demo-example > .station-classification {
+  position: static;
+  max-width: none;
+  max-height: none;
+}
+
+.components-demo-station-pins {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.components-demo-station-pins li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.components-demo-station-pins .station-map-marker {
+  flex: none;
+}
+
+.components-demo-map-mouseover {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.components-demo-map-mouseover .station-map-marker {
+  flex: none;
+}
+
+.components-demo-station-popup {
+  margin-top: 8px;
+}
+
+.components-demo-station-graph {
+  width: min(760px, calc(100% - 32px));
+}
+
+.components-demo-station-graph .sample-chart {
+  min-height: clamp(180px, 42vh, 360px);
+}
+
+.components-demo-map-tooltip {
+  white-space: pre-wrap;
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid #707070;
+  border-radius: 3px;
+  background: #f5f5f5;
+  color: #141414;
+  font-size: .75rem;
+  overflow-wrap: anywhere;
+}
+
+.components-demo-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.components-demo-selection fieldset {
+  margin: 0;
+}
+
+.components-demo-selection .series-selection-toolbar {
+  position: static;
+  max-width: 100%;
+  margin: 12px 0 0;
+}
+
+.components-demo-selection-chart {
+  width: min(360px, calc(100% - 32px));
+  padding: 16px;
+  border: 1px solid #bccfdd;
+  border-radius: 8px;
+  color: inherit;
+}
+
+.components-demo-selection-chart h3 {
+  margin: 0 0 12px;
+}
+
+.components-demo-selection-chart meter {
+  width: 100%;
+}
+
+.components-demo-selection-chart form {
+  justify-items: end;
+}
+
+@media (max-width: 800px) {
+  .components-demo-columns {
+    display: none;
+  }
+
+  .components-demo-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}

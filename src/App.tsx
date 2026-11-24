@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import SessionPanel from './SessionPanel'
 import ApplicationMenu from './ApplicationMenu'
+import SettingsIcon from './components/SettingsIcon'
 import './App.css'
 
 export default function App() {
@@ -17,10 +18,7 @@ export default function App() {
         </div>
         <div className="header-actions">
           <button type="button" className="header-icon" aria-label="Settings" aria-haspopup="dialog" popoverTarget="header-settings">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="m9 3-.8 3-2.8.8L3 9l2 3-2 3 2.4 2.2 2.8.8.8 3h6l.8-3 2.8-.8L21 15l-2-3 2-3-2.4-2.2-2.8-.8L15 3Z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
+            <SettingsIcon />
           </button>
           <div ref={setIdentityHost} />
         </div>

@@ -13,7 +13,7 @@ release="$(date -u +%Y%m%dT%H%M%S)-$$"
 mkdir -p "$HYDRODB_FRONTEND_WEB_DIR/releases/$release"
 cp -R "$ROOT/dist/." "$HYDRODB_FRONTEND_WEB_DIR/releases/$release/"
 mkdir -p "$HYDRODB_FRONTEND_WEB_DIR/assets"
-cp -R "$ROOT/dist/assets/." "$HYDRODB_FRONTEND_WEB_DIR/assets/"
+rsync -r --checksum "$ROOT/dist/assets/" "$HYDRODB_FRONTEND_WEB_DIR/assets/"
 
 dc() {
     docker compose -p hydrodb-empty-test --project-directory "$TARGET" \

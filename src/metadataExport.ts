@@ -1,17 +1,17 @@
 import { ApiError } from './api'
-import { catalogPath, decodeNode, decodePage, entities, identity, name } from './metadata'
+import { catalogPath, decodeNode, decodePage, entities, identity, metadataFields, name } from './metadata'
 import type { CatalogSort, Collection, Json, MetadataClient, MetadataNode, Selection } from './metadata'
 
 export type ExportFormat = 'csv' | 'json' | 'parquet'
 const maxBytes = 50 * 1024 * 1024
 const encode = new TextEncoder()
-const json = (value: unknown) => JSON.stringify(value, (_key, item: unknown) =>
+export const json = (value: unknown) => JSON.stringify(value, (_key, item: unknown) =>
   typeof item === 'bigint' ? item.toString() : item)
 
 function row(node: MetadataNode, selection: Selection): Record<string, Json> {
   return Object.fromEntries([
     ['name', name(node)], ['id', identity(node)],
-    ...entities[node.collection].fields.map((field) => [field, field === 'status' ? node.status
+    ...metadataFields(node.collection).map((field) => [field, field === 'status' ? node.status
       : node.references.some((ref) => ref.field === field)
         ? node.references.filter((ref) => ref.field === field).map((ref) => `${ref.id} / v${ref.version}`).join('; ')
         : selection.asOf && field.startsWith('station_location') ? null : node.item[field] ?? null]),
@@ -22,7 +22,7 @@ function cell(value: Json): string | null {
   return value === null ? null : typeof value === 'object' ? json(value) : String(value)
 }
 
-function csvCell(value: Json): string {
+export function csvCell(value: Json): string {
   const text = cell(value) ?? ''
   const safe = /^[=+\-@\t\r\n]/.test(text) ? `'${text}` : text
   return `"${safe.replaceAll('"', '""')}"`
@@ -35,11 +35,13 @@ export async function exportMetadata({
   format: ExportFormat; signal: AbortSignal; progress: (rows: number) => void
   columns?: string[]; sort?: CatalogSort
 }): Promise<Blob> {
-  const allowed = ['name', 'id', ...entities[collection].fields]
+  const allowed = ['name', 'id', ...metadataFields(collection)]
   if (!columns.length || new Set(columns).size !== columns.length || columns.some((column) => !allowed.includes(column))) {
     throw new ApiError('invalid-input', 'Select at least one valid table column before downloading.')
   }
-  const context = { collection, read_cutoff: cutoff, as_of: selection.asOf, filters: selection.filters, q: selection.q, columns, sort }
+  const context = { collection, read_cutoff: cutoff, as_of: selection.asOf, filters: selection.filters, q: selection.q,
+    polygon: !selection.asOf && selection.polygon ? { projection: 'EPSG:3857', vertices: selection.polygon } : undefined,
+    status: selection.instanceStatus, columns, sort }
   const parts: BlobPart[] = []
   const columnData = columns.map((name) => ({ name, data: [] as (string | null)[], type: 'STRING' as const }))
   let bytes = 0

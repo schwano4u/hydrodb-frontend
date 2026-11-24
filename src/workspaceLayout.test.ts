@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Orientation } from 'dockview'
-import { decodeLayout, layoutKey, panelPlacement } from './workspaceLayout'
+import { decodeLayout, decodeNamedWorkspaceLayout, layoutKey, panelPlacement } from './workspaceLayout'
 
 function saved() {
   return {
@@ -22,6 +22,20 @@ function saved() {
 }
 
 describe('workspace presentation persistence', () => {
+  it('skips unavailable named-layout panels without restoring their data', () => {
+    const { version, layout } = saved()
+    layout.grid.root.data.push({ type: 'leaf', size: 300,
+      data: { id: 'future-group', views: ['future-panel'], activeView: 'future-panel' } })
+    layout.activeGroup = 'future-group'
+    const restored = decodeNamedWorkspaceLayout({ version, layout: { ...layout,
+      panels: { ...layout.panels, 'future-panel': { id: 'future-panel', contentComponent: 'placeholder' } },
+    } })
+    expect([...restored.skipped]).toEqual(['future-panel'])
+    expect(restored.layout.grid.root.data).toHaveLength(1)
+    expect(restored.layout.activeGroup).toBeUndefined()
+    expect(Object.keys(restored.layout.panels)).toEqual(['welcome', 'metadata'])
+  })
+
   it('restores Map as a trusted singleton panel without persisting station data', () => {
     const value = saved()
     const restored = decodeLayout(JSON.stringify({ ...value, layout: { ...value.layout,

@@ -1,5 +1,6 @@
-import { ApiError, metadataGet } from './api'
-import type { MetadataPath } from './api'
+import { ApiError, metadataGet, sampleGet } from './api'
+import type { MetadataPath, SamplePath } from './api'
+import type { MapPoint } from './mapPolygon'
 
 export const entities = {
   stations: { title: 'Stations', prefix: 'station', fields: ['station_external_id', 'station_location_status', 'station_location', 'status'] },
@@ -9,10 +10,39 @@ export const entities = {
   parameters: { title: 'Parameters', prefix: 'parameter', fields: ['parameter_group_id', 'parameter_quantity_kind', 'parameter_canonical_unit_id', 'parameter_allowed_value_shapes'] },
   parameter_groups: { title: 'Parameter groups', prefix: 'parameter_group', fields: ['parameter_group_metadata_version'] },
   quality_codebooks: { title: 'Quality codebooks', prefix: 'quality_codebook', fields: ['quality_codebook_metadata_version'] },
-  series: { title: 'Time series', prefix: 'series', fields: ['station_id', 'parameter_id', 'unit_id', 'series_processing_level', 'series_value_shape', 'series_value_statistic', 'series_sampling_definition'] },
+  series: { title: 'Time series', prefix: 'series', fields: ['station_id', 'parameter_id', 'unit_id', 'series_processing_level', 'series_value_shape', 'series_value_statistic', 'series_sampling_definition', 'series_sampling_interval', 'series_period_definition'] },
   units: { title: 'Units', prefix: 'unit', fields: ['unit_symbol', 'unit_ucum_code', 'unit_dimension'] },
 }
 export type Collection = keyof typeof entities
+
+const optionalFields: Record<Collection, readonly string[]> = {
+  stations: ['station_owner', 'station_provider', 'station_type', 'station_time_zone', 'station_user_attributes'],
+  sampling_positions: [],
+  instruments: [],
+  instrument_deployments: [],
+  parameters: [
+    'parameter_allowed_unit_ids', 'parameter_allowed_value_statistics', 'parameter_allowed_timestamp_positions',
+    'parameter_temporal_semantics', 'parameter_numeric_precision', 'parameter_plausibility_rules',
+    'parameter_user_attributes', 'parameter_mappings',
+  ],
+  parameter_groups: [],
+  quality_codebooks: ['quality_codebook_entries'],
+  series: [
+    'dataset_id', 'quality_codebook_id', 'sampling_position_id', 'instrument_deployment_id',
+    'series_sampling_alignment', 'series_timestamp_position', 'series_calendar_definition', 'series_quality_coverage_policy',
+  ],
+  units: ['unit_definition_uri', 'unit_si_scale', 'unit_si_offset'],
+}
+
+export function metadataFields(collection: Collection): string[] {
+  const { fields, prefix } = entities[collection]
+  return [...new Set([
+    ...fields, ...optionalFields[collection],
+    ...['description', 'external_id', 'provenance', 'metadata_version', 'validity_start'].map((field) => `${prefix}_${field}`),
+    'status',
+  ])]
+}
+
 export type Json = null | boolean | string | number | bigint | Json[] | { [key: string]: Json }
 export interface Reference { collection: Collection; id: string; version: string; field: string }
 export interface MetadataNode {
@@ -25,9 +55,12 @@ export interface MetadataNode {
 export interface Page<T> { items: T[]; next: string | null; cutoff: string; total?: number }
 export interface Filter { collection: Collection; field: string; values: string[] }
 export interface Choice { value: string; label: string }
-export interface Selection { filters: Filter[]; q: string; asOf: string }
+export interface Selection {
+  filters: Filter[]; q: string; asOf: string; instanceStatus?: MetadataNode['status']; polygon?: MapPoint[]
+}
 export interface CatalogSort { column: string; direction: 'asc' | 'desc' }
 export interface DetailSelection extends Reference { cutoff: string; asOf: string }
+export interface SelectedSeries extends DetailSelection { name: string }
 export const collections = Object.keys(entities).filter(isCollection)
 export function isCollection(value: unknown): value is Collection {
   return typeof value === 'string' && Object.hasOwn(entities, value)
@@ -67,8 +100,8 @@ export function decodeNode(value: unknown): MetadataNode {
     references,
   }
 }
-export function decodePage<T>(body: unknown, decode: (value: unknown) => T): Page<T> {
-  if (!object(body) || !Array.isArray(body.items) || body.items.length > 50 ||
+export function decodePage<T>(body: unknown, decode: (value: unknown) => T, maxItems = 50): Page<T> {
+  if (!object(body) || !Array.isArray(body.items) || body.items.length > maxItems ||
     !(body.next_after === null || text(body.next_after) || typeof body.next_after === 'number' || typeof body.next_after === 'bigint') ||
     !text(body.read_cutoff)) invalid()
   const total = typeof body.total === 'bigint' && body.total <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(body.total) : body.total
@@ -103,12 +136,14 @@ export const label = (field: string) => field.replaceAll('_', ' ')
 export function attributes(collection: Collection): string[] {
   const prefix = entities[collection].prefix
   const scalar = entities[collection].fields.filter((f) =>
-    !['station_location', 'station_location_status', 'parameter_quantity_kind', 'parameter_allowed_value_shapes', 'unit_dimension', 'series_sampling_definition', 'parameter_metadata_version'].includes(f))
+    !['station_location', 'station_location_status', 'parameter_quantity_kind', 'parameter_allowed_value_shapes', 'unit_dimension', 'series_sampling_definition', 'series_sampling_interval', 'series_period_definition', 'parameter_metadata_version'].includes(f))
   return [...new Set([`${prefix}_id`, `${prefix}_name`, `${prefix}_external_id`, 'status', ...scalar,
     ...(collection === 'series' ? ['series_sampling_kind'] : [])])]
 }
 export function catalogPath(selection: Selection, collection: Collection, options: Record<string, string>, cutoff?: string, sort?: CatalogSort): MetadataPath {
   const params = new URLSearchParams({ collection, limit: '25', filters: JSON.stringify(selection.filters), q: selection.q, ...options })
+  if (selection.polygon && !selection.asOf && options.mode !== 'detail') params.set('polygon', JSON.stringify(selection.polygon))
+  if (selection.instanceStatus) params.set('status', selection.instanceStatus)
   if (cutoff) params.set('read_cutoff', cutoff)
   else if (selection.asOf) params.set('as_of', selection.asOf)
   if (sort) { params.set('sort', sort.column); params.set('order', sort.direction) }
@@ -120,12 +155,21 @@ export class MetadataClient {
   private bytes = 0
   private active = 0
   clear() { this.cache.clear(); this.bytes = 0 }
-  async read<T>(path: MetadataPath, decode: (value: unknown) => T, signal: AbortSignal): Promise<T> {
-    signal.throwIfAborted()
-    const cached = this.cache.get(path)
-    if (cached) return decode(cached.value)
-    if (this.active >= 4) throw new ApiError('invalid-input', 'Four metadata reads are already active. Close a branch or retry.')
+  private admitRead() {
+    if (this.active >= 4) throw new ApiError('invalid-input', 'Four data reads are already active. Close a branch or retry.')
     this.active++
+  }
+  async readSamples<T>(path: SamplePath, decode: (body: unknown) => T, signal: AbortSignal): Promise<T> {
+    signal.throwIfAborted()
+    this.admitRead()
+    try { return await sampleGet(path, decode, signal) } finally { this.active-- }
+  }
+  async read<T>(path: MetadataPath, decode: (value: unknown) => T, signal: AbortSignal, { fresh = false } = {}): Promise<T> {
+    signal.throwIfAborted()
+    const cacheable = !fresh && path.startsWith('/api/v1/metadata/')
+    const cached = fresh ? undefined : this.cache.get(path)
+    if (cached) return decode(cached.value)
+    this.admitRead()
     try {
       return await metadataGet(path, (body) => {
         const result = decode(body)
@@ -135,7 +179,7 @@ export class MetadataClient {
         }
         const bytes = new TextEncoder().encode(JSON.stringify(body, (_key, value: unknown) =>
           typeof value === 'bigint' ? value.toString() : value)).byteLength
-        if (!signal.aborted && bytes <= 1024 * 1024) {
+        if (cacheable && !signal.aborted && bytes <= 1024 * 1024) {
           while (this.cache.size && (this.cache.size >= 12 || this.bytes + bytes > 4 * 1024 * 1024)) {
             const key = this.cache.keys().next().value
             if (key === undefined) break

@@ -21,16 +21,16 @@ const reply = (items: unknown[]) => new Response(JSON.stringify({ items, next_af
 beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 1510, 400))
   vi.stubGlobal('ResizeObserver', class {
-    private callback: () => void
-    constructor(callback: () => void) { this.callback = callback }
-    observe() { this.callback() }
+    private callback: (entries: { contentRect: DOMRect }[]) => void
+    constructor(callback: (entries: { contentRect: DOMRect }[]) => void) { this.callback = callback }
+    observe(target: HTMLElement) { this.callback([{ contentRect: target.getBoundingClientRect() }]) }
     disconnect() {}
   })
 })
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
-function TestBrowser(props: Pick<ComponentProps<typeof MetadataBrowser>, 'client' | 'onExpired' | 'onOpen'>) {
-  const state = useMetadataSelection(props)
+function TestBrowser({ asOf = '', ...props }: Pick<ComponentProps<typeof MetadataBrowser>, 'client' | 'onExpired' | 'onOpen' | 'seriesSelection'> & { asOf?: string }) {
+  const state = useMetadataSelection(props, true, { selection: { asOf, q: '', filters: [] } })
   const [view, setView] = useState<MetadataView>('By instance type')
   return <>
     <nav>{(['Filters', 'Tree view', 'By instance type'] as const).map((name) =>
@@ -46,6 +46,114 @@ function TestPanels(props: Pick<ComponentProps<typeof MetadataBrowser>, 'client'
 }
 
 describe('shared metadata selection', () => {
+  it.each(['', '2026-11-20T12:00:00Z'])('summarizes station locations without substituting current coordinates for as-of %j', async (asOf) => {
+    const station = node('stations', 'location-fixture')
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      const collection = new URL(path, 'https://test').searchParams.get('collection')
+      return reply(collection === 'stations' ? [{
+        ...station, position_scope: 'current_only',
+        item: { ...station.item, station_location_status: 'known', station_location: { latitude: 0, longitude: -8.125 } },
+      }] : [])
+    }))
+    const onOpen = vi.fn()
+    render(<TestBrowser client={new MetadataClient()} onExpired={vi.fn()} onOpen={onOpen} asOf={asOf} />)
+    fireEvent.change(screen.getByLabelText('Instance type'), { target: { value: 'stations' } })
+    if (asOf) {
+      await screen.findByRole('cell', { name: 'Historical coordinates unavailable' })
+      expect(screen.queryByText(/-8\.125/)).not.toBeInTheDocument()
+    } else {
+      const details = await screen.findByRole('button', { name: 'Details for Duplicate name / location-fixture' })
+      expect(details.closest('td')).toHaveTextContent(/^0 \/ -8\.125 DetailsCurrent coordinates only$/)
+      fireEvent.click(details)
+      expect(onOpen).toHaveBeenCalledWith({ collection: 'stations', id: 'location-fixture', version: '1', field: '', cutoff: 'fixed', asOf })
+    }
+  })
+
+  it('defaults to Active and 10 rows per page, and resets pagination when status changes', async () => {
+    const requests: URL[] = []
+    const active = node('series', 'active-row')
+    const retired = { ...node('series', 'retired-row'), status: 'retired' }
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      const url = new URL(path, 'https://test')
+      if (url.pathname === '/api/v1/series/coverage') return Response.json({ read_cutoff: 'fixed', items: [] })
+      requests.push(url)
+      const status = url.searchParams.get('status')
+      return Response.json({ items: status === 'active' ? [active] : status === 'retired' ? [retired] : [active, retired],
+        next_after: null, read_cutoff: 'fixed', total: 51 })
+    }))
+    render(<TestBrowser client={new MetadataClient()} onExpired={vi.fn()} onOpen={vi.fn()} />)
+    await screen.findByRole('button', { name: 'Duplicate name / active-row' })
+    expect(screen.queryByRole('button', { name: 'Duplicate name / retired-row' })).not.toBeInTheDocument()
+    expect(requests.at(-1)?.searchParams.get('status')).toBe('active')
+    expect(screen.getByLabelText('Rows per page')).toHaveValue('10')
+    expect(requests.at(-1)?.searchParams.get('limit')).toBe('10')
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await screen.findByText('Page 2 / 6')
+    fireEvent.click(screen.getByRole('button', { name: 'Status: Active' }))
+    const activeChoice = screen.getByLabelText('Active', { exact: true })
+    const retiredChoice = screen.getByLabelText('Retired', { exact: true })
+    expect(activeChoice).toBeChecked()
+    expect(retiredChoice).not.toBeChecked()
+    fireEvent.click(retiredChoice)
+    await screen.findByRole('button', { name: 'Duplicate name / retired-row' })
+    expect(screen.getByRole('button', { name: 'Duplicate name / active-row' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Status: All' })).toBeInTheDocument()
+    expect(requests.at(-1)?.searchParams.get('page')).toBe('1')
+    expect(requests.at(-1)?.searchParams.has('status')).toBe(false)
+    fireEvent.click(activeChoice)
+    await screen.findByRole('button', { name: 'Duplicate name / retired-row' })
+    expect(screen.queryByRole('button', { name: 'Duplicate name / active-row' })).not.toBeInTheDocument()
+    expect(requests.at(-1)?.searchParams.get('status')).toBe('retired')
+    expect(requests.at(-1)?.searchParams.get('read_cutoff')).toBe('fixed')
+  })
+
+  it('shows the last successful catalog refresh immediately before Reload', async () => {
+    const first = '2026-11-22T10:00:00.000Z'
+    const second = '2026-11-22T11:00:00.000Z'
+    vi.setSystemTime(new Date(first))
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ items: [node('series', 'A')],
+      next_after: null, read_cutoff: 'fixed', total: 51 })))
+    render(<TestBrowser client={new MetadataClient()} onExpired={vi.fn()} onOpen={vi.fn()} />)
+    const before = await screen.findByText(first)
+    expect(before).toHaveAttribute('dateTime', first)
+    const reload = screen.getByRole('button', { name: 'Reload' })
+    expect(reload.previousElementSibling).toHaveTextContent(`Last updated ${first}`)
+    vi.setSystemTime(new Date(second))
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await screen.findByText('Page 2 / 6')
+    expect(screen.getByText(first)).toBeInTheDocument()
+    await waitFor(() => expect(reload).toBeEnabled())
+    fireEvent.click(reload)
+    expect(await screen.findByText(second)).toHaveAttribute('dateTime', second)
+  })
+
+  it('returns to page one and requests all selected series first when the Select header is clicked', async () => {
+    const requests: URL[] = []
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      const url = new URL(path, 'https://test')
+      if (url.pathname === '/api/v1/series/coverage') return Response.json({ read_cutoff: 'fixed', items: [] })
+      requests.push(url)
+      const ids = url.searchParams.has('selected_first') ? ['first', 'later', 'unselected']
+        : url.searchParams.get('page') === '2' ? ['later'] : ['first', 'unselected']
+      return new Response(JSON.stringify({ items: ids.map((id) => node('series', id)),
+        next_after: null, read_cutoff: 'fixed', total: 51 }))
+    }))
+    render(<TestBrowser client={new MetadataClient()} onExpired={vi.fn()} onOpen={vi.fn()}
+      seriesSelection={{ ids: ['later', 'first'], toggle: vi.fn() }} />)
+    await screen.findByRole('button', { name: 'Duplicate name / first' })
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await screen.findByRole('button', { name: 'Duplicate name / later' })
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    const table = await screen.findByRole('table')
+    expect(within(table).getAllByRole('checkbox').map((input) => (input as HTMLInputElement).checked)).toEqual([true, true, false])
+    expect(requests.at(-1)?.searchParams.get('selected_first')).toBe('["first","later"]')
+    expect(requests.at(-1)?.searchParams.get('page')).toBe('1')
+    expect(requests.at(-1)?.searchParams.get('read_cutoff')).toBe('fixed')
+    fireEvent.click(within(table).getByRole('button', { name: 'Select' }))
+    await screen.findByRole('button', { name: 'Duplicate name / first' })
+    expect(screen.queryByRole('button', { name: 'Duplicate name / later' })).not.toBeInTheDocument()
+  })
+
   it('paginates only first-level Stations with standard controls and loads every child batch', async () => {
     const requests: URL[] = []
     vi.stubGlobal('fetch', vi.fn(async (path: string) => {
@@ -104,7 +212,7 @@ describe('shared metadata selection', () => {
     expect(requests.at(-1)?.searchParams.get('limit')).toBe('10')
     expect(requests.at(-1)?.searchParams.get('sort')).toBe('label')
     expect(requests.at(-1)?.searchParams.has('after')).toBe(false)
-    expect(within(screen.getByRole('article', { name: 'Metadata browser' })).getByLabelText('Rows per page')).toHaveValue('50')
+    expect(within(screen.getByRole('article', { name: 'Metadata browser' })).getByLabelText('Rows per page')).toHaveValue('10')
     fireEvent.click(resized.getByRole('button', { name: 'Next page' }))
     await tree.findByRole('button', { name: 'Expand Duplicate name / station-2' })
     fireEvent.click(await within(screen.getByRole('article', { name: 'Metadata browser' })).findByRole('button', { name: 'Reload' }))
@@ -168,7 +276,7 @@ describe('shared metadata selection', () => {
     const tree = within(screen.getByRole('article', { name: 'Tree view' }))
     const metadata = within(screen.getByRole('article', { name: 'Metadata browser' }))
     const help = filters.getByRole('button', { name: 'Filter attribute help' })
-    const explanation = filters.getByText('Values within an attribute match any selection; different attributes must all match one declared metadata path. At most 12 attributes and 20 values per attribute.')
+    const explanation = filters.getByText('Values within an attribute match any selection. Different attributes must all match one declared metadata path. Select up to 12 attributes and 20 values per attribute.')
     expect(explanation).not.toBeVisible()
     expect(help).toHaveAttribute('aria-expanded', 'false')
     expect(help).toHaveAttribute('aria-controls', explanation.id)
@@ -188,6 +296,7 @@ describe('shared metadata selection', () => {
     const reload = metadata.getByRole('button', { name: 'Reload' })
     expect(reload.textContent).toBe('')
     expect(reload.querySelector('svg')).toBeInTheDocument()
+    await waitFor(() => expect(reload).toBeEnabled())
     fireEvent.click(reload)
     await waitFor(() => expect(requests.filter((url) => !url.searchParams.has('read_cutoff'))).toHaveLength(2))
     expect(await filters.findByLabelText('Station / A')).toBeChecked()
@@ -324,12 +433,26 @@ describe('shared metadata selection', () => {
   it('controls visible columns and widths without losing the page, and resets pagination for global sort changes', async () => {
     const requests: URL[] = []
     vi.stubGlobal('fetch', vi.fn(async (path: string) => {
-      const url = new URL(path, 'https://test'); requests.push(url)
+      const url = new URL(path, 'https://test')
+      if (url.pathname === '/api/v1/series/coverage') return Response.json({ read_cutoff: 'fixed', items: [] })
+      requests.push(url)
       const item = node('series', url.searchParams.get('page') === '2' ? 'second' : 'first')
+      Object.assign(item.item, url.searchParams.get('page') === '2'
+        ? { series_value_statistic: 'average', series_period_definition: { kind: 'fixed', duration: 'PT1H' },
+          series_description: 'Water level series', series_sampling_alignment: { origin: '1970-01-01T00:00:00Z' } }
+        : { series_value_statistic: 'instantaneous', series_sampling_definition: { kind: 'equidistant' },
+          series_sampling_interval: 'PT60S', series_period_definition: null })
       return new Response(JSON.stringify({ items: [item], next_after: url.searchParams.get('page') === '2' ? null : 'next', read_cutoff: 'fixed', total: 100 }))
     }))
     render(<TestBrowser client={new MetadataClient()} onExpired={vi.fn()} onOpen={vi.fn()} />)
     const table = await screen.findByRole('table')
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
+    fireEvent.click(screen.getByLabelText('period definition', { selector: 'input', exact: true }))
+    expect(within(table).getByRole('cell', { name: 'Not applicable' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
+    expect(within(table).getByRole('cell', { name: 'PT60S' })).toBeInTheDocument()
+    const sampling = within(table).getByRole('columnheader', { name: 'sampling definition' })
+    expect(sampling.nextElementSibling).toHaveAccessibleName('sampling interval')
     const total = screen.getByText('of 100 total rows')
     expect(total.previousElementSibling).toContainElement(screen.getByLabelText('Rows per page'))
     expect(screen.queryByText('Read context')).not.toBeInTheDocument()
@@ -337,9 +460,26 @@ describe('shared metadata selection', () => {
     expect(next.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(next)
     await screen.findByRole('button', { name: 'Duplicate name / second' })
+    expect(screen.getByRole('cell', { name: /PT1H/ })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
+    for (const name of ['value shape', 'value statistic', 'sampling definition', 'sampling interval', 'period definition']) {
+      expect(screen.getByRole('columnheader', { name })).toBeInTheDocument()
+      expect(screen.getByLabelText(name, { selector: 'input', exact: true })).toBeChecked()
+    }
+    for (const name of ['series description', 'series sampling alignment', 'status']) {
+      expect(screen.queryByRole('columnheader', { name })).not.toBeInTheDocument()
+      const choice = screen.getByLabelText(name, { selector: 'input', exact: true })
+      expect(choice).not.toBeChecked()
+      fireEvent.click(choice)
+      expect(screen.getByRole('columnheader', { name })).toBeInTheDocument()
+    }
+    expect(screen.getByRole('cell', { name: 'Water level series' })).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: /1970-01-01T00:00:00Z/ })).toBeInTheDocument()
+    for (const name of ['series description', 'series sampling alignment', 'status']) {
+      fireEvent.click(screen.getByLabelText(name, { selector: 'input', exact: true }))
+    }
     fireEvent.click(screen.getByLabelText('station id', { selector: 'input[type="checkbox"]' }))
-    expect(screen.getByRole('table').querySelectorAll('thead th')).toHaveLength(7)
+    expect(screen.getByRole('table').querySelectorAll('thead th')).toHaveLength(11)
     expect(requests.at(-1)?.searchParams.get('page')).toBe('2')
     const resize = screen.getByRole('separator', { name: 'Resize Name / stable ID' })
     const initialWidth = Number(resize.getAttribute('aria-valuenow'))
@@ -349,15 +489,22 @@ describe('shared metadata selection', () => {
     const resizedWidth = resize.getAttribute('aria-valuenow')
     expect(Number(resizedWidth)).toBe(initialWidth + 50)
     expect(screen.queryByRole('slider')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'series processing level' }))
+    fireEvent.click(screen.getByRole('button', { name: 'processing level' }))
     await waitFor(() => expect(requests.at(-1)?.searchParams.get('sort')).toBe('series_processing_level'))
     expect(requests.at(-1)?.searchParams.get('order')).toBe('asc')
     expect(requests.at(-1)?.searchParams.get('page')).toBe('1')
     expect(requests.at(-1)?.searchParams.get('read_cutoff')).toBe('fixed')
     await screen.findByRole('button', { name: 'Duplicate name / first' })
-    fireEvent.click(screen.getByRole('button', { name: 'series processing level' }))
+    fireEvent.click(screen.getByRole('button', { name: 'processing level' }))
     await waitFor(() => expect(requests.at(-1)?.searchParams.get('order')).toBe('desc'))
     await screen.findByRole('button', { name: 'Duplicate name / first' })
+    const sortButton = screen.getByRole('button', { name: 'processing level' })
+    expect(sortButton.querySelector('svg')).toHaveAttribute('data-sort', 'desc')
+    fireEvent.click(sortButton)
+    await screen.findByRole('button', { name: 'Duplicate name / first' })
+    const clearedSort = screen.getByRole('button', { name: 'processing level' })
+    expect(clearedSort.closest('th')).not.toHaveAttribute('aria-sort')
+    expect(clearedSort.querySelector('svg')).toHaveAttribute('data-sort', 'none')
     fireEvent.change(screen.getByLabelText('Rows per page'), { target: { value: '25' } })
     await waitFor(() => expect(requests.at(-1)?.searchParams.get('limit')).toBe('25'))
     expect(requests.at(-1)?.searchParams.get('page')).toBe('1')
@@ -371,11 +518,51 @@ describe('shared metadata selection', () => {
     fireEvent.change(screen.getByLabelText('Instance type'), { target: { value: 'stations' } })
     await screen.findByRole('table')
     expect(screen.queryByRole('button', { name: 'station location' })).not.toBeInTheDocument()
+    expect(screen.getByText('station location', { selector: 'th > span' }).closest('th')?.querySelector('svg')).toBeNull()
     expect(screen.queryByRole('button', { name: 'station location status' })).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Instance type'), { target: { value: 'series' } })
     await screen.findByRole('table')
     expect(await screen.findByRole('separator', { name: 'Resize Name / stable ID' })).toHaveAttribute('aria-valuenow', resizedWidth)
     expect(screen.getByLabelText('station id', { selector: 'input[type="checkbox"]' })).not.toBeChecked()
+  })
+
+  it('shows both Series sample dates by default and loads them together at the page cutoff', async () => {
+    const first = '2024-05-01T10:00:00Z'
+    const last = '2024-06-01T11:30:00Z'
+    const coverageRequests: URL[] = []
+    const catalogRequests: URL[] = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (path: string) => {
+      const url = new URL(path, 'https://test')
+      if (url.pathname === '/api/v1/series/coverage') {
+        coverageRequests.push(url)
+        return new Response(JSON.stringify({ read_cutoff: 'fixed', items: [
+          { series_id: 'A', status: 'available', first_sample_at: first, last_sample_at: last },
+          { series_id: 'B', status: 'available', first_sample_at: null, last_sample_at: null },
+        ] }))
+      }
+      catalogRequests.push(url)
+      return reply([node('series', 'A'), node('series', 'B')])
+    }))
+    render(<TestBrowser client={new MetadataClient()} onExpired={vi.fn()} onOpen={vi.fn()} />)
+    await screen.findByRole('table')
+    expect(await screen.findByText(first)).toBeVisible()
+    expect(screen.getByText(last)).toBeVisible()
+    expect(screen.queryByRole('columnheader', { name: 'period definition' })).not.toBeInTheDocument()
+    expect(screen.getAllByText('No samples')).toHaveLength(2)
+    expect(coverageRequests).toHaveLength(1)
+    expect(coverageRequests[0]?.searchParams.get('read_cutoff')).toBe('fixed')
+    expect(coverageRequests[0]?.searchParams.get('series_ids')).toBe('["A","B"]')
+    for (const [name, field] of [['First sample (UTC)', 'first_sample_at'], ['Last sample (UTC)', 'last_sample_at']] as const) {
+      fireEvent.click(screen.getByRole('button', { name }))
+      await waitFor(() => expect(catalogRequests.some(({ searchParams }) =>
+        searchParams.get('sort') === field && searchParams.get('order') === 'asc' && searchParams.get('page') === '1')).toBe(true))
+      expect(await screen.findByRole('columnheader', { name })).toHaveAttribute('aria-sort', 'ascending')
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
+    const period = screen.getByLabelText('period definition', { selector: 'input' })
+    expect(period).not.toBeChecked()
+    fireEvent.click(period)
+    expect(screen.getByRole('columnheader', { name: 'period definition' })).toBeVisible()
   })
 
   it('redistributes only right-hand column widths proportionally, clamps resizing, and supports one visible column', async () => {
@@ -395,7 +582,7 @@ describe('shared metadata selection', () => {
       expect(after[index]! / before[index]!).toBeCloseTo(after[2]! / before[2]!, 10)
     }
     expect(after.reduce((sum, width) => sum + width, 0)).toBeCloseTo(100, 10)
-    expect(screen.queryByRole('separator', { name: 'Resize series sampling definition' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('separator', { name: 'Resize period definition' })).not.toBeInTheDocument()
     fireEvent.keyDown(resize, { key: 'End' })
     expect(resize.getAttribute('aria-valuenow')).toBe(resize.getAttribute('aria-valuemax'))
     const maximum = widths()
@@ -407,7 +594,8 @@ describe('shared metadata selection', () => {
     expect(widths().every((width) => width > 0)).toBe(true)
     expect(widths().reduce((sum, width) => sum + width, 0)).toBeCloseTo(100, 10)
     fireEvent.click(screen.getByRole('button', { name: 'Columns' }))
-    for (const checkbox of screen.getAllByRole('checkbox', { hidden: true }).slice(1)) fireEvent.click(checkbox)
+    const columns = within(screen.getByLabelText('Columns', { selector: '[role="dialog"]' }))
+    for (const checkbox of columns.getAllByRole('checkbox', { hidden: true, checked: true }).slice(1)) fireEvent.click(checkbox)
     expect(widths()).toEqual([100])
     expect(screen.queryByRole('separator')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Name / stable ID', { selector: 'input' })).toBeDisabled()
@@ -451,8 +639,10 @@ describe('shared metadata selection', () => {
     await screen.findByText(/End of matching results/)
     expect(requests.at(-1)?.searchParams.get('filters')).toContain('"B"')
     expect(requests.at(-1)?.searchParams.get('filters')).not.toContain('"A"')
+    const reload = screen.getByRole('button', { name: 'Reload' })
+    await waitFor(() => expect(reload).toBeEnabled())
     const beforeRefresh = requests.length
-    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    fireEvent.click(reload)
     await waitFor(() => expect(requests.length).toBeGreaterThan(beforeRefresh))
     expect(requests.at(-1)?.searchParams.get('filters')).toContain('"B"')
     expect(requests.at(-1)?.searchParams.get('filters')).not.toContain('"A"')
@@ -609,6 +799,27 @@ describe('shared metadata selection', () => {
     expect(await screen.findByText('Historical coordinates unavailable. No current coordinates have been substituted.')).toBeVisible()
     expect(screen.queryByText('station location / structured data')).not.toBeInTheDocument()
     expect(screen.getByRole('article', { name: 'Metadata detail' })).not.toHaveTextContent('CURRENT-COORDINATE-FIXTURE')
+    expect(screen.getByRole('article', { name: 'Metadata detail' })).toHaveTextContent('historical-station')
+    expect(screen.queryByRole('button', { name: 'Copy stable ID' })).not.toBeInTheDocument()
+  })
+
+  it('shows a series-wide sample span at the Details cutoff', async () => {
+    const seriesId = 'series:coverage'
+    const first = '2024-05-01T10:00:00Z'
+    const last = '2024-06-01T11:30:00.123456Z'
+    const fetcher = vi.fn().mockImplementation((path: string) => path.startsWith('/api/v1/series/')
+      ? new Response(JSON.stringify({ series_id: seriesId, first_sample_at: first, last_sample_at: last, read_cutoff: 'fixed' }))
+      : reply([node('series', seriesId)]))
+    vi.stubGlobal('fetch', fetcher)
+    render(<MetadataDetail selection={{
+      collection: 'series', id: seriesId, version: '1', field: '', cutoff: 'fixed', asOf: '',
+    }} client={new MetadataClient()} onExpired={vi.fn()} onOpen={vi.fn()} />)
+    expect(await screen.findByText(first)).toHaveAttribute('datetime', first)
+    expect(screen.getByText(last)).toHaveAttribute('datetime', last)
+    expect(screen.getByText('First sample (UTC)')).toBeVisible()
+    expect(screen.getByText('Last sample (UTC)')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Copy stable ID' })).not.toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledWith('/api/v1/series/series%3Acoverage/coverage?read_cutoff=fixed', expect.anything())
   })
 
   it('discards late selection results, preserves errors, and expires the workspace on a current 401', async () => {

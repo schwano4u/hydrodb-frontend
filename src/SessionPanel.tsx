@@ -281,7 +281,7 @@ export default function SessionPanel({ identityHost, menuHost }: { identityHost?
     {identityHost ? createPortal(identity, identityHost) : identity}
     {session.state !== 'signed-in' && menuHost && createPortal(<WorkspaceMenus />, menuHost)}
     {session.state === 'signed-in'
-      ? <WorkspaceSlot key={`${session.identity.principalId}:${healthRefresh}`} principalId={session.identity.principalId} onSessionExpired={onSessionExpired} health={health} menuHost={menuHost} />
+      ? <WorkspaceSlot key={`${session.identity.principalId}:${healthRefresh}`} principalId={session.identity.principalId} csrfToken={session.identity.csrfToken} onSessionExpired={onSessionExpired} health={health} menuHost={menuHost} />
       : health}
     </>
   )

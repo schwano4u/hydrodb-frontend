@@ -4,15 +4,37 @@ import type { AddPanelOptions, SerializedDockview } from 'dockview'
 export const panels = {
   welcome: { title: 'Welcome', text: 'Read-only workspace. Open Metadata to browse authorized instances. No samples or scientific operations are loaded.' },
   health: { title: 'Health', text: '' },
+  jobs: { title: 'Jobs', text: '' },
   metadata: { title: 'Metadata', text: '' },
   map: { title: 'Map', text: '' },
   filters: { title: 'Filters', text: '' },
   'station-tree': { title: 'Tree view', text: '' },
-  series: { title: 'Series viewer', text: 'Sample viewing arrives in P3. No chart, query, aggregation, or scientific processing is performed here.' },
+  series: { title: 'Time series graph', text: 'Select a Time series in Metadata and choose Open visualization.' },
+  'series-data': { title: 'Time series data', text: 'Exact samples share the Time series graph query. Selection and sample data are not persisted in the layout.' },
+  'series-2': { title: 'Time series graph 2' },
+  'series-data-2': { title: 'Time series data 2' },
+  'series-3': { title: 'Time series graph 3' },
+  'series-data-3': { title: 'Time series data 3' },
+  'series-4': { title: 'Time series graph 4' },
+  'series-data-4': { title: 'Time series data 4' },
   detail: { title: 'Details', text: 'Select a metadata instance to inspect its retained version. Instance selection is not persisted in the layout.' },
 }
 export const panelLimit = Object.keys(panels).length
 export type PanelId = keyof typeof panels
+export const graphPanels = {
+  series: 'series-data',
+  'series-2': 'series-data-2',
+  'series-3': 'series-data-3',
+  'series-4': 'series-data-4',
+} as const
+export type GraphId = keyof typeof graphPanels
+export const graphIds = Object.keys(graphPanels).filter(isGraphId)
+export function isGraphId(id: string): id is GraphId {
+  return Object.hasOwn(graphPanels, id)
+}
+export function isSamplePanel(id: string) {
+  return isGraphId(id) || Object.values(graphPanels).some((table) => table === id)
+}
 export type WorkspaceLayout = { version: 2; layout: SerializedDockview; closedPanels?: Partial<Record<PanelId, SerializedDockview>> }
 type Group = NonNullable<NonNullable<SerializedDockview['floatingGroups']>[number]['data']>
 export function isPanelId(value: unknown): value is PanelId {
@@ -49,10 +71,10 @@ export function leftEdgeGroup(layout: SerializedDockview): Group | undefined {
   return { id: data.id, views, activeView: data.activeView }
 }
 
-function decodeDockview(layout: unknown): SerializedDockview {
+function decodeDockview(layout: unknown, skipped?: Set<string>): SerializedDockview {
   if (!record(layout) || !record(layout.grid) || !record(layout.panels)) invalid()
   if (layout.popoutGroups !== undefined && (!Array.isArray(layout.popoutGroups) || layout.popoutGroups.length)) invalid()
-  const seen = new Set<PanelId>()
+  const seen = new Set<string>()
   const groups = new Set<string>()
   let count = 0
   function group(data: unknown, allowEmpty = false): Group {
@@ -60,13 +82,17 @@ function decodeDockview(layout: unknown): SerializedDockview {
     if (typeof data.id !== 'string' || !/^[\w-]{1,64}$/.test(data.id) || groups.has(data.id) ||
       !Array.isArray(data.views) || (!allowEmpty && data.views.length === 0) || data.views.length > panelLimit) invalid()
     groups.add(data.id)
-    const views = data.views.map((id: unknown) => {
-      if (!isPanelId(id) || seen.has(id)) invalid()
+    const originalViews: unknown[] = data.views
+    const views = originalViews.flatMap((id) => {
+      if (typeof id !== 'string' || seen.has(id)) invalid()
       seen.add(id)
-      return id
+      if (isPanelId(id)) return [id]
+      if (!skipped || !/^[a-z][a-z0-9-]{0,63}$/.test(id)) invalid()
+      skipped.add(id)
+      return []
     })
-    if (data.activeView !== undefined && (!isPanelId(data.activeView) || !views.includes(data.activeView))) invalid()
-    return { id: data.id, views, activeView: data.activeView }
+    if (data.activeView !== undefined && !originalViews.includes(data.activeView)) invalid()
+    return { id: data.id, views, activeView: data.activeView === undefined ? undefined : isPanelId(data.activeView) ? data.activeView : views[0] }
   }
   function node(value: unknown, depth = 0): SerializedDockview['grid']['root'] {
     if (!record(value) || depth > 8 || ++count > 24) invalid()
@@ -126,8 +152,10 @@ function decodeDockview(layout: unknown): SerializedDockview {
     const panel: unknown = layout.panels[id]
     if (!record(panel) || panel.id !== id || panel.contentComponent !== 'placeholder' ||
       panel.params !== undefined || (panel.tabComponent !== undefined && panel.tabComponent !== 'workspace')) invalid()
+    if (!isPanelId(id)) continue
     serializedPanels[id] = { id, contentComponent: 'placeholder', title: panels[id].title }
   }
+
   if (layout.activeGroup !== undefined && (typeof layout.activeGroup !== 'string' || !groups.has(layout.activeGroup))) invalid()
   return { grid: mainGrid, panels: serializedPanels, activeGroup: layout.activeGroup,
     ...(floatingGroups.length ? { floatingGroups } : {}), ...(edgeGroups.left ? { edgeGroups } : {}) }
@@ -156,6 +184,34 @@ export function decodeLayout(text: string): WorkspaceLayout {
 }
 
 type GridNode = SerializedDockview['grid']['root']
+
+export function decodeNamedWorkspaceLayout(snapshot: unknown) {
+  const skipped = new Set<string>()
+  if (!record(snapshot) || snapshot.version !== 2 || JSON.stringify(snapshot).length > 16000) invalid()
+  const layout = decodeDockview(snapshot.layout, skipped)
+  if (!skipped.size) return { layout, skipped }
+  function prune(node: GridNode): GridNode | undefined {
+    if (!Array.isArray(node.data)) return node.data.views.length ? node : undefined
+    const data = node.data.map(prune).filter((child) => child !== undefined)
+    return data.length ? { ...node, data } : undefined
+  }
+  layout.grid.root = prune(layout.grid.root) ?? { type: 'branch', data: [] }
+  layout.floatingGroups = layout.floatingGroups?.flatMap((floating) => {
+    if (floating.data) return floating.data.views.length ? [floating] : []
+    if (!floating.grid) return []
+    const root = prune(floating.grid.root)
+    return root ? [{ ...floating, grid: { ...floating.grid, root } }] : []
+  })
+  const edge = leftEdgeGroup(layout)
+  const edgeId = edge?.views.length ? edge.id : undefined
+  if (edge && !edgeId) delete layout.edgeGroups?.left
+  const remaining = [edgeId, ...leaves(layout.grid.root).map(({ id }) => id),
+    ...(layout.floatingGroups ?? []).flatMap((floating) => floating.grid ? leaves(floating.grid.root).map(({ id }) => id) : [floating.data?.id])]
+  if (!remaining.includes(layout.activeGroup)) delete layout.activeGroup
+  if (!Object.keys(layout.panels).length) invalid()
+  return { layout, skipped }
+}
+
 type Placement = { position?: AddPanelOptions['position']; floating?: false }
   | { floating: Exclude<AddPanelOptions['floating'], false | undefined>; position?: never }
 function leaves(node: GridNode): Group[] {

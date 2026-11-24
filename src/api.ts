@@ -1,4 +1,4 @@
-import { parse } from 'lossless-json'
+import { isSafeNumber, parse } from 'lossless-json'
 
 export type ApiFailure = 'http' | 'timeout' | 'network' | 'cancelled' | 'malformed' | 'invalid-input'
 
@@ -62,21 +62,31 @@ export interface DatabaseStatus {
   schema_version: number
 }
 
-export type MetadataPath = `/api/v1/metadata/${string}`
+export type MetadataPath = `/api/v1/metadata/${string}` | `/api/v1/series/${string}/coverage?${string}` | `/api/v1/series/coverage?${string}`
+export type SamplePath = `/api/v1/series/${string}/samples?${string}`
+export type JobsPath = `/api/v1/etl/${string}` | `/api/v1/jobs/${string}`
 type Endpoint =
   | '/api/v1/auth/sessions'
   | '/api/v1/auth/me'
   | '/api/v1/auth/sessions/current'
+  | '/api/v1/preferences/layouts'
+  | `/api/v1/preferences/layouts/${string}`
   | '/health/live'
   | '/health/ready'
   | '/api/v1/status'
   | MetadataPath
+  | SamplePath
+  | JobsPath
 
 const messages: Record<string, string> = {
   AUTHENTICATION_FAILED: 'Invalid username or password.',
   AUTHENTICATION_REQUIRED: 'Sign-in is required or the session has expired.',
   INSUFFICIENT_CAPABILITY: 'The signed-in user is not permitted to perform this operation.',
-  CSRF_TOKEN_INVALID: 'Session verification failed. Check the session before retrying sign-out.',
+  CSRF_TOKEN_INVALID: 'Session verification failed. Check the session before retrying.',
+  LAYOUT_NAME_EXISTS: 'That name is already used in this layout scope.',
+  LAYOUT_LIMIT: 'This scope already contains 50 saved layouts.',
+  INVALID_LAYOUT_NAME: 'Enter a layout name of 1–80 characters.',
+  INVALID_LAYOUT: 'This layout is not supported.',
   SIGN_IN_THROTTLED: 'Too many sign-in attempts. Wait before trying again.',
   DEPENDENCY_UNAVAILABLE: 'A backend dependency is unavailable.',
   HISTORY_FENCED: 'Database history is fenced; operator action is required.',
@@ -88,9 +98,11 @@ const messages: Record<string, string> = {
   CATALOG_LIMIT_EXCEEDED: 'Catalog read exceeded nine seconds. Narrow the selection.',
 }
 
-export function parseExactJson(text: string): unknown {
-  return parse(text, null, { parseNumber: (source) =>
-    /^-?\d+$/.test(source) && !Number.isSafeInteger(Number(source)) ? BigInt(source) : Number(source) })
+export function parseExactJson(text: string, preserveDecimals = false): unknown {
+  return parse(text, null, { parseNumber: (source) => {
+    if (/^-?\d+$/.test(source)) return Number.isSafeInteger(Number(source)) ? Number(source) : BigInt(source)
+    return preserveDecimals && !isSafeNumber(source, { approx: false }) ? source : Number(source)
+  } })
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -105,7 +117,7 @@ function uuid(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)
 }
 
-function timestamp(value: unknown): value is string {
+export function timestamp(value: unknown): value is string {
   return typeof value === 'string' &&
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
     Number.isFinite(Date.parse(value))
@@ -169,7 +181,9 @@ async function request<T>(
     let body: unknown
     if (response.status !== 204) {
       try {
-        if (path.startsWith('/api/v1/metadata/')) {
+        if (path.startsWith('/api/v1/metadata/') || path.startsWith('/api/v1/series/') ||
+          path.startsWith('/api/v1/etl/') || path.startsWith('/api/v1/jobs/')) {
+          const label = path.startsWith('/api/v1/metadata/') ? 'Metadata' : path.startsWith('/api/v1/series/') ? 'Sample' : 'Jobs'
           const reader = response.body?.getReader()
           if (!reader) malformed('metadata JSON')
           const chunks: Uint8Array[] = []
@@ -180,14 +194,14 @@ async function request<T>(
             bytes += value.byteLength
             if (bytes > 2 * 1024 * 1024) {
               await reader.cancel()
-              throw new ApiError('malformed', 'Metadata response exceeds the 2 MiB page budget. Narrow the request.')
+              throw new ApiError('malformed', `${label} response exceeds the 2 MiB page budget. Narrow the request.`)
             }
             chunks.push(value)
           }
           const combined = new Uint8Array(bytes)
           let offset = 0
           for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.byteLength }
-          body = parseExactJson(new TextDecoder().decode(combined))
+          body = parseExactJson(new TextDecoder().decode(combined), path.startsWith('/api/v1/series/'))
         } else {
           body = await response.json()
         }
@@ -218,9 +232,63 @@ async function request<T>(
   }
 }
 
+export type LayoutScope = 'private' | 'public'
+export type NamedLayout = { id: string; name: string; scope: LayoutScope }
+const layoutsPath = '/api/v1/preferences/layouts'
+
+function namedLayout(value: unknown): NamedLayout {
+  if (!record(value) || !uuid(value.id) || !nonempty(value.name) || (value.scope !== 'private' && value.scope !== 'public')) {
+    malformed('saved layout')
+  }
+  return { id: value.id, name: value.name, scope: value.scope }
+}
+
+export function listNamedLayouts(signal?: AbortSignal) {
+  return request(layoutsPath, {}, (body) => {
+    if (!record(body) || !Array.isArray(body.items) || body.items.length > 100 || typeof body.can_publish !== 'boolean') {
+      malformed('saved layouts')
+    }
+    return { items: body.items.map(namedLayout), canPublish: body.can_publish }
+  }, signal)
+}
+
+export function readNamedLayout(id: string, signal?: AbortSignal) {
+  return request(`${layoutsPath}/${encodeURIComponent(id)}`, {}, (body) => body, signal)
+}
+
+export function writeNamedLayout(change: { name: string; scope: LayoutScope; snapshot: unknown } |
+  { id: string; name: string } | { id: string; snapshot: unknown }, csrfToken: string, signal?: AbortSignal) {
+  const { id, body } = 'id' in change
+    ? { id: change.id, body: 'name' in change ? { name: change.name } : { snapshot: change.snapshot } }
+    : { id: undefined, body: change }
+  return request(id ? `${layoutsPath}/${encodeURIComponent(id)}` : layoutsPath, {
+    method: id ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+    body: JSON.stringify(body),
+  }, namedLayout, signal)
+}
+
+export function deleteNamedLayout(id: string, csrfToken: string, signal?: AbortSignal) {
+  return request(`${layoutsPath}/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'x-csrf-token': csrfToken } },
+    (_body, status) => { if (status !== 204) malformed('layout deletion') }, signal)
+}
+
 export function metadataGet<T>(path: MetadataPath, decode: (body: unknown) => T, signal: AbortSignal): Promise<T> {
   return request(path, { method: 'GET' }, (body, status) => {
     if (status !== 200) malformed('metadata')
+    return decode(body)
+  }, signal)
+}
+
+export function sampleGet<T>(path: SamplePath, decode: (body: unknown) => T, signal: AbortSignal): Promise<T> {
+  return request(path, { method: 'GET' }, (body, status) => {
+    if (status !== 200) malformed('sample')
+    return decode(body)
+  }, signal)
+}
+
+export function jobsGet<T>(path: JobsPath, decode: (body: unknown) => T, signal: AbortSignal): Promise<T> {
+  return request(path, { method: 'GET' }, (body, status) => {
+    if (status !== 200) malformed('Jobs')
     return decode(body)
   }, signal)
 }
